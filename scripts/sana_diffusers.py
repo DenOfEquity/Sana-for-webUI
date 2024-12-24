@@ -69,7 +69,7 @@ from transformers import AutoProcessor, AutoModelForCausalLM
 from transformers import T5TokenizerFast, T5ForConditionalGeneration
 
 ##   my extras
-import customStylesListPA as styles
+import customStylesListSana as styles
 
 
 # modules/processing.py - don't use ',', '\n', ':' in values
