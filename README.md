@@ -16,7 +16,6 @@ diffusers>=0.32.0
 
 ```
 
-
 ---
 ### downloads models on demand - minimum will be ~15GB ###
 
@@ -24,11 +23,15 @@ diffusers>=0.32.0
 >[!NOTE]
 > if **noUnload** is not selected then models are freed after use, reloaded for each run.
 
+---
+### UI screenshot ###
+![](screenshot.png "UI screenshot")
+
 
 ---
 <details>
 <summary>Change log</summary>
-  
+
 #### 24/12/2024 (2) ####
 * added PAG and some sort of i2i
 
