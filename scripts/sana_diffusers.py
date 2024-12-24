@@ -167,7 +167,7 @@ def predict(positive_prompt, negative_prompt, model, width, height, guidance_sca
 
         del pos_embeds, neg_embeds, pos_attention, neg_attention
 
-        if SanaStorage.noUnload == False:
+        if SanaStorage.noUnload:
             SanaStorage.pipeTE.to('cpu')
         else:
             SanaStorage.pipeTE = None
