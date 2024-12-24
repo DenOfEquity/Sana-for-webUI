@@ -53,7 +53,6 @@ from modules.ui_components import ResizeHandleRow, ToolButton
 import modules.infotext_utils as parameters_copypaste
 
 ##   diffusers / transformers necessary imports
-from diffusers import SanaPipeline as pipeline
 from diffusers.pipelines.pixart_alpha.pipeline_pixart_alpha import (
     ASPECT_RATIO_512_BIN,
     ASPECT_RATIO_1024_BIN,
@@ -70,18 +69,19 @@ from transformers import T5TokenizerFast, T5ForConditionalGeneration
 
 ##   my extras
 import customStylesListSana as styles
+import scripts.sana_pipeline as pipeline
 
 
 # modules/processing.py - don't use ',', '\n', ':' in values
-def create_infotext(model, positive_prompt, negative_prompt, guidance_scale, steps, seed, width, height):
-    karras = " : Karras" if SanaStorage.karras == True else ""
-    vpred = " : V-Prediction" if SanaStorage.vpred == True else ""
-    isDMD = "PixArt-Alpha-DMD" in model
+def create_infotext(model, positive_prompt, negative_prompt, guidance_scale, steps, seed, width, height, PAG_scale, PAG_adapt):
+#    karras = " : Karras" if SanaStorage.karras == True else ""
+#    vpred = " : V-Prediction" if SanaStorage.vpred == True else ""
     generation_params = {
         "Size": f"{width}x{height}",
         "Seed": seed,
-        "Steps": steps if not isDMD else None,
+        "Steps": steps,
         "CFG": f"{guidance_scale}",
+        "PAG": f"{PAG_scale} ({PAG_adapt})",
     }
 #add i2i marker?
     prompt_text = f"Prompt: {positive_prompt}\n"
@@ -92,7 +92,7 @@ def create_infotext(model, positive_prompt, negative_prompt, guidance_scale, ste
 
     return f"Model: {model}\n{prompt_text}{generation_params_text}{noise_text}"
 
-def predict(positive_prompt, negative_prompt, model, width, height, guidance_scale, num_steps, sampling_seed, num_images, i2iSource, i2iDenoise, style, *args):
+def predict(positive_prompt, negative_prompt, model, width, height, guidance_scale, num_steps, sampling_seed, num_images, i2iSource, i2iDenoise, style, PAG_scale, PAG_adapt, maskType, maskSource, maskBlur, maskCutOff, *args):
  
     logging.set_verbosity(logging.ERROR)        #   diffusers and transformers both enjoy spamming the console with useless info
  
@@ -118,10 +118,32 @@ def predict(positive_prompt, negative_prompt, model, width, height, guidance_sca
         
     ####    check img2img
     if i2iSource == None:
+        maskType = 0
         i2iDenoise = 1
+    if maskSource == None:
+        maskType = 0
     if SanaStorage.i2iAllSteps == True:
         num_steps = int(num_steps / i2iDenoise)
-            ####    end check img2img
+        
+    match maskType:
+        case 0:     #   'none'
+            maskSource = None
+            maskBlur = 0
+            maskCutOff = 1.0
+        case 1:     #   'image'
+            maskSource = maskSource['background'] if SanaStorage.usingGradio4 else maskSource['image']
+        case 2:     #   'drawn'
+            maskSource = maskSource['layers'][0]  if SanaStorage.usingGradio4 else maskSource['mask']
+        case 3:     #   'composite'
+            maskSource = maskSource['composite']  if SanaStorage.usingGradio4 else maskSource['image']
+        case _:
+            maskSource = None
+            maskBlur = 0
+            maskCutOff = 1.0
+
+    if maskBlur > 0:
+        maskSource = TF.gaussian_blur(maskSource, 1+2*maskBlur)
+    ####    end check img2img
  
     ####    enforce safe generation size
     if SanaStorage.resolutionBin == False:
@@ -139,7 +161,7 @@ def predict(positive_prompt, negative_prompt, model, width, height, guidance_sca
 
     ####    setup pipe for text encoding
     if SanaStorage.pipeTE == None:
-        SanaStorage.pipeTE = pipeline.from_pretrained(
+        SanaStorage.pipeTE = pipeline.Sana_Pipeline_DoE.from_pretrained(
             "Efficient-Large-Model/Sana_1600M_1024px_BF16_diffusers",
             transformer=None,
             vae=None,
@@ -178,12 +200,13 @@ def predict(positive_prompt, negative_prompt, model, width, height, guidance_sca
     
     ####    setup pipe for transformer + VAE
     if SanaStorage.pipeTR == None:
-        SanaStorage.pipeTR = pipeline.from_pretrained(
+        SanaStorage.pipeTR = pipeline.Sana_Pipeline_DoE.from_pretrained(
             model,
 #            tokenizer=None,
             text_encoder=None,
             variant=variant,
-            torch_dtype=dtype
+            torch_dtype=dtype,
+            pag_applied_layers=["transformer_blocks.8"],
         )
         SanaStorage.lastModel = model
         SanaStorage.pipeTR.enable_model_cpu_offload()
@@ -305,8 +328,10 @@ def predict(positive_prompt, negative_prompt, model, width, height, guidance_sca
             generator                       = generator,
             latents                         = latents.to(dtype),   #   initial noise, possibly with colour biasing
 
-            # image                           = i2iSource,
-            # strength                        = i2iDenoise,
+            image                           = i2iSource,
+            mask_image                      = maskSource,
+            strength                        = i2iDenoise,
+            mask_cutoff                     = maskCutOff,
 
             num_inference_steps             = num_steps,
             num_images_per_prompt           = num_images,
@@ -318,6 +343,9 @@ def predict(positive_prompt, negative_prompt, model, width, height, guidance_sca
             prompt_attention_mask           = SanaStorage.pos_attention,
             negative_prompt_attention_mask  = SanaStorage.neg_attention,
             use_resolution_binning          = SanaStorage.resolutionBin,
+
+            pag_scale                       = PAG_scale,
+            pag_adaptive_scale              = PAG_adapt,
             
             output_type                     = "latent",
         ).images
@@ -349,7 +377,8 @@ def predict(positive_prompt, negative_prompt, model, width, height, guidance_sca
             guidance_scale, 
             num_steps, 
             fixed_seed + i, 
-            width, height)
+            width, height,
+            PAG_scale, PAG_adapt)
 
         results.append((image, info))
         
@@ -382,6 +411,7 @@ def predict(positive_prompt, negative_prompt, model, width, height, guidance_sca
 def on_ui_tabs():
     if SanaStorage.ModuleReload:
         reload(styles)
+        reload(pipeline)
     
     models_list = ["Efficient-Large-Model/Sana_600M_512px_diffusers", "Efficient-Large-Model/Sana_600M_1024px_diffusers", "Efficient-Large-Model/Sana_1600M_512px_diffusers", "Efficient-Large-Model/Sana_1600M_1024px_BF16_diffusers", "Efficient-Large-Model/Sana_1600M_2Kpx_BF16_diffusers"]
     defaultModel = models_list[3]
@@ -412,8 +442,7 @@ def on_ui_tabs():
         if image == None:
             return originalPrompt
 
-        with patch("transformers.dynamic_module_utils.get_imports", fixed_get_imports): #workaround for unnecessary flash_attn requirement
-            model = AutoModelForCausalLM.from_pretrained('microsoft/Florence-2-base', 
+        model = AutoModelForCausalLM.from_pretrained('microsoft/Florence-2-base', 
                                                          attn_implementation="sdpa", 
                                                          torch_dtype=torch.float16, 
                                                          trust_remote_code=True).to('cuda')
@@ -547,7 +576,7 @@ def on_ui_tabs():
     schedulerList = ["default", "DDPM", "DEIS", "DPM++ 2M", "DPM++ 2M SDE", "DPM", "DPM SDE",
                      "Euler", "Euler A", "LCM", "SA-solver", "UniPC", ]
 
-    def parsePrompt (positive, negative, width, height, seed, steps, cfg, nr, ng, nb, ns):
+    def parsePrompt (positive, negative, width, height, seed, steps, cfg, nr, ng, nb, ns, PAG_scale, PAG_adapt):
         p = positive.split('\n')
         lineCount = len(p)
 
@@ -610,8 +639,8 @@ def on_ui_tabs():
                     match pairs[0]:
                         case "Size:":
                             size = pairs[1].split('x')
-                            width = 16 * ((int(size[0]) + 8) // 16)
-                            height = 16 * ((int(size[1]) + 8) // 16)
+                            width = 32 * ((int(size[0]) + 16) // 32)
+                            height = 32 * ((int(size[1]) + 16) // 32)
                         case "Seed:":
                             seed = int(pairs[1])
                         case "Sampler:":
@@ -633,10 +662,15 @@ def on_ui_tabs():
                         case "CFG:":
                             cfg = float(pairs[1])
                         case "width:":
-                            width = 16 * ((int(pairs[1]) + 8) // 16)
+                            width = 32 * ((int(pairs[1]) + 16) // 32)
                         case "height:":
-                            height = 16 * ((int(pairs[1]) + 8) // 16)
-        return positive, negative, width, height, seed, steps, cfg, nr, ng, nb, ns
+                            height = 32 * ((int(pairs[1]) + 16) // 32)
+                        case "PAG:":
+                            if len(pairs) == 3:
+                                PAG_scale = float(pairs[1])
+                                PAG_adapt = float(pairs[2].strip('\(\)'))
+
+        return positive, negative, width, height, seed, steps, cfg, nr, ng, nb, ns, PAG_scale, PAG_adapt
 
     resolutionList512 = [
         (1024, 256),    (864, 288),     (704, 352),     (640, 384),     (608, 416),
@@ -679,15 +713,21 @@ def on_ui_tabs():
         return gradio.Button.update(value=['s', 'S'][SanaStorage.sharpNoise],
                                 variant=['secondary', 'primary'][SanaStorage.sharpNoise])
 
+    def maskFromImage (image):
+        if image:
+            return image, 'drawn'
+        else:
+            return None, 'none'
+
 
     with gradio.Blocks() as sana_block:
         with ResizeHandleRow():
             with gradio.Column():
                 with gradio.Row():
-                    access = ToolButton(value='\U0001F917', variant='secondary')
+                    access = ToolButton(value='\U0001F917', variant='secondary', visible=False)
                     model = gradio.Dropdown(models_list, label='Model', value=defaultModel, type='value', scale=2)
 #                    scheduler = gradio.Dropdown(schedulerList, label='Sampler', value="UniPC", type='value', scale=1)
-                    karras = ToolButton(value="\U0001D542", variant='secondary', tooltip="use Karras sigmas")
+                    karras = ToolButton(value="\U0001D542", variant='secondary', tooltip="use Karras sigmas", visible=False)
 #                    vpred = ToolButton(value="\U0001D54D", variant='secondary', tooltip="use v-prediction")
 
                 with gradio.Row():
@@ -699,9 +739,9 @@ def on_ui_tabs():
                     negative_prompt = gradio.Textbox(label='Negative', placeholder='Negative prompt', lines=1.01, show_label=False)
                     style = gradio.Dropdown([x[0] for x in styles.styles_list], label='Style', value="[style] (None)", type='index', scale=0, show_label=False)
                 with gradio.Row():
-                    width = gradio.Slider(label='Width', minimum=128, maximum=4096, step=32, value=defaultWidth, elem_id="PixArtSigma_width")
+                    width = gradio.Slider(label='Width', minimum=128, maximum=4096, step=32, value=defaultWidth)
                     swapper = ToolButton(value="\U000021C4")
-                    height = gradio.Slider(label='Height', minimum=128, maximum=4096, step=32, value=defaultHeight, elem_id="PixArtSigma_height")
+                    height = gradio.Slider(label='Height', minimum=128, maximum=4096, step=32, value=defaultHeight)
                     resBin = ToolButton(value="\U0001D401", variant='primary', tooltip="use resolution binning")
                     dims = gradio.Dropdown([f'{i} \u00D7 {j}' for i,j in resolutionList1024],
                                         label='Quickset', type='value', scale=0)
@@ -709,6 +749,9 @@ def on_ui_tabs():
                 with gradio.Row():
                     guidance_scale = gradio.Slider(label='CFG', minimum=1, maximum=8, step=0.1, value=4.0, scale=1, visible=True)
                     steps = gradio.Slider(label='Steps', minimum=1, maximum=60, step=1, value=20, scale=2, visible=True)
+                with gradio.Row():
+                    PAG_scale = gradio.Slider(label='Perturbed-Attention Guidance scale', minimum=0, maximum=8, step=0.1, value=0.0, scale=1, visible=True)
+                    PAG_adapt = gradio.Slider(label='PAG adaptive scale', minimum=0.00, maximum=0.1, step=0.001, value=0.0, scale=1)
                 with gradio.Row():
                     sampling_seed = gradio.Number(label='Seed', value=-1, precision=0, scale=1)
                     random = ToolButton(value="\U0001f3b2\ufe0f")
@@ -723,9 +766,13 @@ def on_ui_tabs():
                         initialNoiseA = gradio.Slider(minimum=0, maximum=0.1, value=0.0, step=0.001, label='strength')
                         sharpNoise = ToolButton(value="s", variant='secondary', tooltip='Sharpen initial noise')
 
-                with gradio.Accordion(label='image to image', open=False, visible=False):
+                with gradio.Accordion(label='image to image', open=False):
                     with gradio.Row():
                         i2iSource = gradio.Image(label='image to image source', sources=['upload'], type='pil', interactive=True, show_download_button=False)
+                        if SanaStorage.usingGradio4:
+                            maskSource = gradio.ImageMask(label='mask source', sources=['upload'], type='pil', interactive=True, show_download_button=False, layers=False, brush=gradio.Brush(colors=["#F0F0F0"], default_color="#F0F0F0", color_mode='fixed'))
+                        else:
+                            maskSource = gradio.Image(label='mask source', sources=['upload'], type='pil', interactive=True, show_download_button=False, tool='sketch', image_mode='RGB', brush_color='#F0F0F0')#opts.img2img_inpaint_mask_brush_color)
                     with gradio.Row():
                         with gradio.Column():
                             with gradio.Row():
@@ -738,13 +785,19 @@ def on_ui_tabs():
                                 i2iCaption = gradio.Button(value='Caption image (Florence-2)', scale=6)
                                 toPrompt = ToolButton(value='P', variant='secondary')
 
+                        with gradio.Column():
+                            maskType = gradio.Dropdown(['none', 'image', 'drawn', 'composite'], value='none', label='Mask', type='index')
+                            maskBlur = gradio.Slider(label='Blur mask radius', minimum=0, maximum=25, step=1, value=0)
+                            maskCut = gradio.Slider(label='Ignore Mask after step', minimum=0.00, maximum=1.0, step=0.01, value=1.0)
+                            maskCopy = gradio.Button(value='use i2i source as template')
+
                 with gradio.Row():
                     noUnload = gradio.Button(value='keep models loaded', variant='primary' if SanaStorage.noUnload else 'secondary', tooltip='noUnload', scale=1)
                     unloadModels = gradio.Button(value='unload models', tooltip='force unload of models', scale=1)
 
-                ctrls = [positive_prompt, negative_prompt, model, width, height, guidance_scale, steps, sampling_seed, batch_size, i2iSource, i2iDenoise, style,]
+                ctrls = [positive_prompt, negative_prompt, model, width, height, guidance_scale, steps, sampling_seed, batch_size, i2iSource, i2iDenoise, style, PAG_scale, PAG_adapt, maskType, maskSource, maskBlur, maskCut]
                 
-                parseCtrls = [positive_prompt, negative_prompt, width, height, sampling_seed, steps, guidance_scale, initialNoiseR, initialNoiseG, initialNoiseB, initialNoiseA]
+                parseCtrls = [positive_prompt, negative_prompt, width, height, sampling_seed, steps, guidance_scale, initialNoiseR, initialNoiseG, initialNoiseB, initialNoiseA, PAG_scale, PAG_adapt]
 
             with gradio.Column():
                 generate_button = gradio.Button(value="Generate", variant='primary', visible=True)
@@ -787,6 +840,7 @@ def on_ui_tabs():
 #        vpred.click(toggleVP, inputs=[], outputs=vpred)
         noUnload.click(toggleNU, inputs=[], outputs=noUnload)
         unloadModels.click(unloadM, inputs=[], outputs=[], show_progress=True)
+        maskCopy.click(fn=maskFromImage, inputs=[i2iSource], outputs=[maskSource, maskType])
 
         SP.click(toggleSP, inputs=[], outputs=SP)
         SP.click(superPrompt, inputs=[positive_prompt, sampling_seed], outputs=[SP, positive_prompt])

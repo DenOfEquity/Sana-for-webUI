@@ -28,6 +28,8 @@ diffusers>=0.32.0
 ---
 <details>
 <summary>Change log</summary>
+#### 24/12/2024 (2) ####
+* added PAG and some sort of i2i
 
 #### 24/12/2024 ####
 * first implemention. 2K models need ~16GB VRAM for VAE.
