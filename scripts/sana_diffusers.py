@@ -10,7 +10,6 @@ class SanaStorage:
     lastModel = None
 
     lastSeed = -1
-    galleryIndex = 0
     lastPrompt = None
     lastNegative = None
     pos_embeds = None
@@ -75,23 +74,23 @@ import scripts.sana_pipeline as pipeline
 # modules/processing.py - don't use ',', '\n', ':' in values
 def create_infotext(model, positive_prompt, negative_prompt, guidance_scale, steps, seed, width, height, PAG_scale, PAG_adapt, shift):
 #    karras = " : Karras" if SanaStorage.karras == True else ""
-    CHI = "\n[CHI: enabled]" if SanaStorage.CHI == True else ""
+    CHI = ", CHI: enabled" if SanaStorage.CHI == True else ""
     generation_params = {
-        "Size": f"{width}x{height}",
-        "Seed": seed,
         "Steps": steps,
-        "CFG": f"{guidance_scale}",
+        "CFG scale": f"{guidance_scale}",
+        "Seed": seed,
+        "Size": f"{width}x{height}",
         "PAG": f"{PAG_scale} ({PAG_adapt})",
         "Shift": f"{shift}",
     }
 #add i2i marker?
-    prompt_text = f"Prompt: {positive_prompt}\n"
+    prompt_text = f"{positive_prompt}\n"
     if negative_prompt != "":
-        prompt_text += (f"Negative: {negative_prompt}\n")
-    generation_params_text = "Parameters: " + ", ".join([k if k == v else f'{k}: {v}' for k, v in generation_params.items() if v is not None])
-    noise_text = f"\nInitial noise: {SanaStorage.noiseRGBA}" if SanaStorage.noiseRGBA[3] != 0.0 else ""
+        prompt_text += (f"Negative prompt: {negative_prompt}\n")
+    generation_params_text = ", ".join([k if k == v else f'{k}: {v}' for k, v in generation_params.items() if v is not None])
+    noise_text = f", Initial noise: {SanaStorage.noiseRGBA}" if SanaStorage.noiseRGBA[3] != 0.0 else ""
 
-    return f"Model: {model}\n{prompt_text}{generation_params_text}{noise_text}{CHI}"
+    return f"{prompt_text}{generation_params_text}{noise_text}{CHI}, Model (Sana): {model}"
 
 def predict(positive_prompt, negative_prompt, model, width, height, guidance_scale, num_steps, sampling_seed, num_images, i2iSource, i2iDenoise, style, PAG_scale, PAG_adapt, maskType, maskSource, maskBlur, maskCutOff, shift, *args):
  
@@ -437,12 +436,14 @@ def on_ui_tabs():
     defaultWidth = 1024
     defaultHeight = 1024
     
-    def getGalleryIndex (evt: gradio.SelectData, gallery):
-        SanaStorage.galleryIndex = evt.index
-        return gallery[SanaStorage.galleryIndex][1]
+    def getGalleryIndex (index):
+        return index
 
-    def reuseLastSeed ():
-        return SanaStorage.lastSeed + SanaStorage.galleryIndex
+    def getGalleryText (gallery, index):
+        return gallery[index][1]
+
+    def reuseLastSeed (index):
+        return SanaStorage.lastSeed + index
         
     def i2iSetDimensions (image, w, h):
         if image is not None:
@@ -500,13 +501,13 @@ def on_ui_tabs():
         else:
             return originalPrompt
 
-    def i2iImageFromGallery (gallery):
+    def i2iImageFromGallery (gallery, index):
         try:
             if SanaStorage.usingGradio4:
-                newImage = gallery[SanaStorage.galleryIndex][0]
+                newImage = gallery[index][0]
                 return newImage
             else:
-                newImage = gallery[SanaStorage.galleryIndex][0]['name'].rsplit('?', 1)[0]
+                newImage = gallery[index][0]['name'].rsplit('?', 1)[0]
                 return newImage
         except:
             return None
@@ -824,12 +825,12 @@ def on_ui_tabs():
 
             with gradio.Column():
                 generate_button = gradio.Button(value="Generate", variant='primary', visible=True)
-                output_gallery = gradio.Gallery(label='Output', height="80vh", type='pil', interactive=False, 
+                output_gallery = gradio.Gallery(label='Output', height="80vh", type='pil', interactive=False, elem_id=f"Sana_gallery",
                                             show_label=False, object_fit='contain', visible=True, columns=1, preview=True)
-                image_infotext = gradio.Textbox(visible=False)
 
-#   gallery movement buttons don't work, others do
 #   caption not displaying linebreaks, alt text does
+                gallery_index = gradio.Number(value=0, visible=False)
+                infotext = gradio.Textbox(value="", visible=False)
 
                 with gradio.Row():
                     buttons = parameters_copypaste.create_buttons(["img2img", "inpaint", "extras"])
@@ -837,7 +838,7 @@ def on_ui_tabs():
                 for tabname, button in buttons.items():
                     parameters_copypaste.register_paste_params_button(parameters_copypaste.ParamBinding(
                         paste_button=button, tabname=tabname,
-                        source_text_component=image_infotext,#positive_prompt,
+                        source_text_component=infotext,#positive_prompt,
                         source_image_component=output_gallery,
                     ))
 
@@ -874,18 +875,17 @@ def on_ui_tabs():
         resBin.click(toggleResBin, inputs=[], outputs=resBin)
         swapper.click(lambda w, h: (h, w), inputs=[width, height], outputs=[width, height], show_progress=False)
         random.click(lambda : -1, inputs=[], outputs=sampling_seed, show_progress=False)
-        reuseSeed.click(reuseLastSeed, inputs=[], outputs=sampling_seed, show_progress=False)
+        reuseSeed.click(reuseLastSeed, inputs=gallery_index, outputs=sampling_seed, show_progress=False)
         AS.click(toggleAS, inputs=[], outputs=AS)
 
         i2iSetWH.click (fn=i2iSetDimensions, inputs=[i2iSource, width, height], outputs=[width, height], show_progress=False)
-        i2iFromGallery.click (fn=i2iImageFromGallery, inputs=[output_gallery], outputs=[i2iSource])
+        i2iFromGallery.click (fn=i2iImageFromGallery, inputs=[output_gallery, gallery_index], outputs=[i2iSource])
         i2iCaption.click (fn=i2iMakeCaptions, inputs=[i2iSource, positive_prompt], outputs=[positive_prompt])
         toPrompt.click(toggleC2P, inputs=[], outputs=[toPrompt])
 
-        output_gallery.select (fn=getGalleryIndex, inputs=[output_gallery], outputs=[image_infotext])
+        output_gallery.select(fn=getGalleryIndex, js="selected_gallery_index", inputs=gallery_index, outputs=gallery_index).then(fn=getGalleryText, inputs=[output_gallery, gallery_index], outputs=[infotext])
 
-        generate_button.click(predict, inputs=ctrls, outputs=[generate_button, SP, output_gallery]).then(fn=lambda: gradio.update(value='Generate', variant='primary', interactive=True), inputs=None, outputs=generate_button)
-        generate_button.click(toggleGenerate, inputs=[initialNoiseR, initialNoiseG, initialNoiseB, initialNoiseA], outputs=[generate_button, SP])
+        generate_button.click(toggleGenerate, inputs=[initialNoiseR, initialNoiseG, initialNoiseB, initialNoiseA], outputs=[generate_button, SP]).then(predict, inputs=ctrls, outputs=[generate_button, SP, output_gallery]).then(fn=lambda: gradio.update(value='Generate', variant='primary', interactive=True), inputs=None, outputs=generate_button).then(fn=getGalleryIndex, js="selected_gallery_index", inputs=gallery_index, outputs=gallery_index).then(fn=getGalleryText, inputs=[output_gallery, gallery_index], outputs=[infotext])
 
     return [(sana_block, "Sana", "sana_DoE")]
 
