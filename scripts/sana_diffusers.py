@@ -73,7 +73,7 @@ import scripts.sana_pipeline as pipeline
 
 
 # modules/processing.py - don't use ',', '\n', ':' in values
-def create_infotext(model, positive_prompt, negative_prompt, guidance_scale, steps, seed, width, height, PAG_scale, PAG_adapt):
+def create_infotext(model, positive_prompt, negative_prompt, guidance_scale, steps, seed, width, height, PAG_scale, PAG_adapt, shift):
 #    karras = " : Karras" if SanaStorage.karras == True else ""
 #    vpred = " : V-Prediction" if SanaStorage.vpred == True else ""
     generation_params = {
@@ -82,6 +82,7 @@ def create_infotext(model, positive_prompt, negative_prompt, guidance_scale, ste
         "Steps": steps,
         "CFG": f"{guidance_scale}",
         "PAG": f"{PAG_scale} ({PAG_adapt})",
+        "Shift": f"{shift}",
     }
 #add i2i marker?
     prompt_text = f"Prompt: {positive_prompt}\n"
@@ -92,7 +93,7 @@ def create_infotext(model, positive_prompt, negative_prompt, guidance_scale, ste
 
     return f"Model: {model}\n{prompt_text}{generation_params_text}{noise_text}"
 
-def predict(positive_prompt, negative_prompt, model, width, height, guidance_scale, num_steps, sampling_seed, num_images, i2iSource, i2iDenoise, style, PAG_scale, PAG_adapt, maskType, maskSource, maskBlur, maskCutOff, *args):
+def predict(positive_prompt, negative_prompt, model, width, height, guidance_scale, num_steps, sampling_seed, num_images, i2iSource, i2iDenoise, style, PAG_scale, PAG_adapt, maskType, maskSource, maskBlur, maskCutOff, shift, *args):
  
     logging.set_verbosity(logging.ERROR)        #   diffusers and transformers both enjoy spamming the console with useless info
  
@@ -165,6 +166,7 @@ def predict(positive_prompt, negative_prompt, model, width, height, guidance_sca
             "Efficient-Large-Model/Sana_1600M_1024px_BF16_diffusers",
             transformer=None,
             vae=None,
+            scheduler=None,
             variant="bf16",
             torch_dtype=torch.bfloat16
         )
@@ -202,7 +204,7 @@ def predict(positive_prompt, negative_prompt, model, width, height, guidance_sca
     if SanaStorage.pipeTR == None:
         SanaStorage.pipeTR = pipeline.Sana_Pipeline_DoE.from_pretrained(
             model,
-#            tokenizer=None,
+            tokenizer=None,
             text_encoder=None,
             variant=variant,
             torch_dtype=dtype,
@@ -214,7 +216,10 @@ def predict(positive_prompt, negative_prompt, model, width, height, guidance_sca
 
     ####    end setup pipe for transformer + VAE
 
-#seperate te and transformer?
+
+    ####    shift
+    SanaStorage.pipeTR.scheduler.config.flow_shift = shift
+
 
 
     # gc.collect()
@@ -239,7 +244,6 @@ def predict(positive_prompt, negative_prompt, model, width, height, guidance_sca
 
 
     #   if using resolution_binning, must use adjusted width/height here (don't overwrite values)
-
     if SanaStorage.resolutionBin:
         match SanaStorage.pipeTR.transformer.config.sample_size:
             case 64:
@@ -378,7 +382,8 @@ def predict(positive_prompt, negative_prompt, model, width, height, guidance_sca
             num_steps, 
             fixed_seed + i, 
             width, height,
-            PAG_scale, PAG_adapt)
+            PAG_scale, PAG_adapt,
+            shift)
 
         results.append((image, info))
         
@@ -576,7 +581,7 @@ def on_ui_tabs():
     schedulerList = ["default", "DDPM", "DEIS", "DPM++ 2M", "DPM++ 2M SDE", "DPM", "DPM SDE",
                      "Euler", "Euler A", "LCM", "SA-solver", "UniPC", ]
 
-    def parsePrompt (positive, negative, width, height, seed, steps, cfg, nr, ng, nb, ns, PAG_scale, PAG_adapt):
+    def parsePrompt (positive, negative, width, height, seed, steps, cfg, nr, ng, nb, ns, PAG_scale, PAG_adapt, shift):
         p = positive.split('\n')
         lineCount = len(p)
 
@@ -643,14 +648,6 @@ def on_ui_tabs():
                             height = 32 * ((int(size[1]) + 16) // 32)
                         case "Seed:":
                             seed = int(pairs[1])
-                        case "Sampler:":
-                            sched = ' '.join(pairs[1:])
-                            if sched in schedulerList:
-                                scheduler = sched
-                        case "Scheduler:":
-                            sched = ' '.join(pairs[1:])
-                            if sched in schedulerList:
-                                scheduler = sched
                         case "Steps(Prior/Decoder):":
                             steps = str(pairs[1]).split('/')
                             steps = int(steps[0])
@@ -669,8 +666,10 @@ def on_ui_tabs():
                             if len(pairs) == 3:
                                 PAG_scale = float(pairs[1])
                                 PAG_adapt = float(pairs[2].strip('\(\)'))
+                        case "Shift:":
+                            shift = float(pairs[1])
 
-        return positive, negative, width, height, seed, steps, cfg, nr, ng, nb, ns, PAG_scale, PAG_adapt
+        return positive, negative, width, height, seed, steps, cfg, nr, ng, nb, ns, PAG_scale, PAG_adapt, shift
 
     resolutionList512 = [
         (1024, 256),    (864, 288),     (704, 352),     (640, 384),     (608, 416),
@@ -748,6 +747,7 @@ def on_ui_tabs():
 
                 with gradio.Row():
                     guidance_scale = gradio.Slider(label='CFG', minimum=1, maximum=8, step=0.1, value=4.0, scale=1, visible=True)
+                    shift = gradio.Slider(label='Shift', minimum=1, maximum=8.0, step=0.01, value=3.0, scale=1)
                     steps = gradio.Slider(label='Steps', minimum=1, maximum=60, step=1, value=20, scale=2, visible=True)
                 with gradio.Row():
                     PAG_scale = gradio.Slider(label='Perturbed-Attention Guidance scale', minimum=0, maximum=8, step=0.1, value=0.0, scale=1, visible=True)
@@ -795,9 +795,9 @@ def on_ui_tabs():
                     noUnload = gradio.Button(value='keep models loaded', variant='primary' if SanaStorage.noUnload else 'secondary', tooltip='noUnload', scale=1)
                     unloadModels = gradio.Button(value='unload models', tooltip='force unload of models', scale=1)
 
-                ctrls = [positive_prompt, negative_prompt, model, width, height, guidance_scale, steps, sampling_seed, batch_size, i2iSource, i2iDenoise, style, PAG_scale, PAG_adapt, maskType, maskSource, maskBlur, maskCut]
+                ctrls = [positive_prompt, negative_prompt, model, width, height, guidance_scale, steps, sampling_seed, batch_size, i2iSource, i2iDenoise, style, PAG_scale, PAG_adapt, maskType, maskSource, maskBlur, maskCut, shift]
                 
-                parseCtrls = [positive_prompt, negative_prompt, width, height, sampling_seed, steps, guidance_scale, initialNoiseR, initialNoiseG, initialNoiseB, initialNoiseA, PAG_scale, PAG_adapt]
+                parseCtrls = [positive_prompt, negative_prompt, width, height, sampling_seed, steps, guidance_scale, initialNoiseR, initialNoiseG, initialNoiseB, initialNoiseA, PAG_scale, PAG_adapt, shift]
 
             with gradio.Column():
                 generate_button = gradio.Button(value="Generate", variant='primary', visible=True)

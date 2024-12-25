@@ -230,7 +230,8 @@ class Sana_Pipeline_DoE(DiffusionPipeline, PAGMixin):
         else:
             batch_size = prompt_embeds.shape[0]
 
-        self.tokenizer.padding_side = "right"
+        if self.tokenizer is not None:
+            self.tokenizer.padding_side = "right"
 
         # See Section 3.1. of the paper.
         max_length = max_sequence_length

@@ -24,13 +24,16 @@ diffusers>=0.32.0
 > if **noUnload** is not selected then models are freed after use, reloaded for each run.
 
 ---
-### UI screenshot ###
+### almost current UI screenshot ###
 ![](screenshot.png "UI screenshot")
 
 
 ---
 <details>
 <summary>Change log</summary>
+
+#### 25/12/2024 ####
+* add control of shift parameter. From initial tests doesn't seem as useful as with Flux or SD3.
 
 #### 24/12/2024 (2) ####
 * added PAG and some sort of i2i
