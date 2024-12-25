@@ -25,7 +25,7 @@ class SanaStorage:
     locked = False     #   for preventing changes to the following volatile state while generating
     noUnload = False
     karras = False
-    vpred = False
+    CHI = False
     resolutionBin = True
     sharpNoise = False
     i2iAllSteps = False
@@ -75,7 +75,7 @@ import scripts.sana_pipeline as pipeline
 # modules/processing.py - don't use ',', '\n', ':' in values
 def create_infotext(model, positive_prompt, negative_prompt, guidance_scale, steps, seed, width, height, PAG_scale, PAG_adapt, shift):
 #    karras = " : Karras" if SanaStorage.karras == True else ""
-#    vpred = " : V-Prediction" if SanaStorage.vpred == True else ""
+    CHI = "\n[CHI: enabled]" if SanaStorage.CHI == True else ""
     generation_params = {
         "Size": f"{width}x{height}",
         "Seed": seed,
@@ -91,7 +91,7 @@ def create_infotext(model, positive_prompt, negative_prompt, guidance_scale, ste
     generation_params_text = "Parameters: " + ", ".join([k if k == v else f'{k}: {v}' for k, v in generation_params.items() if v is not None])
     noise_text = f"\nInitial noise: {SanaStorage.noiseRGBA}" if SanaStorage.noiseRGBA[3] != 0.0 else ""
 
-    return f"Model: {model}\n{prompt_text}{generation_params_text}{noise_text}"
+    return f"Model: {model}\n{prompt_text}{generation_params_text}{noise_text}{CHI}"
 
 def predict(positive_prompt, negative_prompt, model, width, height, guidance_scale, num_steps, sampling_seed, num_images, i2iSource, i2iDenoise, style, PAG_scale, PAG_adapt, maskType, maskSource, maskBlur, maskCutOff, shift, *args):
  
@@ -159,31 +159,45 @@ def predict(positive_prompt, negative_prompt, model, width, height, guidance_sca
     fixed_seed = get_fixed_seed(sampling_seed)
     SanaStorage.lastSeed = fixed_seed
 
-
-    ####    setup pipe for text encoding
-    if SanaStorage.pipeTE == None:
-        SanaStorage.pipeTE = pipeline.Sana_Pipeline_DoE.from_pretrained(
-            "Efficient-Large-Model/Sana_1600M_1024px_BF16_diffusers",
-            transformer=None,
-            vae=None,
-            scheduler=None,
-            variant="bf16",
-            torch_dtype=torch.bfloat16
-        )
-
+    ####    text encoding
     useCachedEmbeds = (SanaStorage.lastPrompt == positive_prompt and SanaStorage.lastNegative == negative_prompt)
     if useCachedEmbeds:
         print ("Sana: Skipping tokenizer, text_encoder.")
     else:
-        print ("Sana: encoding prompt ...", end="\r", flush=True)
+        ####    setup pipe for text encoding
+        if SanaStorage.pipeTE == None:
+            SanaStorage.pipeTE = pipeline.Sana_Pipeline_DoE.from_pretrained(
+                "Efficient-Large-Model/Sana_1600M_1024px_BF16_diffusers",
+                transformer=None,
+                vae=None,
+                scheduler=None,
+                variant="bf16",
+                torch_dtype=torch.bfloat16
+            )
 
         SanaStorage.pipeTE.to('cuda')
         SanaStorage.lastPrompt = positive_prompt
         SanaStorage.lastNegative = negative_prompt
 
-        pos_embeds, pos_attention, neg_embeds, neg_attention = SanaStorage.pipeTE.encode_prompt(positive_prompt, negative_prompt=negative_prompt)
+        CHI = [
+                "Given a user prompt, generate an 'Enhanced prompt' that provides detailed visual descriptions suitable for image generation. Evaluate the level of detail in the user prompt:",
+                "- If the prompt is simple, focus on adding specifics about colors, shapes, sizes, textures, and spatial relationships to create vivid and concrete scenes.",
+                "- If the prompt is already detailed, refine and enhance the existing details slightly without overcomplicating.",
+                "Here are examples of how to transform or refine prompts:",
+                "- User Prompt: A cat sleeping -> Enhanced: A small, fluffy white cat curled up in a round shape, sleeping peacefully on a warm sunny windowsill, surrounded by pots of blooming red flowers.",
+                "- User Prompt: A busy city street -> Enhanced: A bustling city street scene at dusk, featuring glowing street lamps, a diverse crowd of people in colorful clothing, and a double-decker bus passing by towering glass skyscrapers.",
+                "Please generate only the enhanced description for the prompt below and avoid including any additional commentary or evaluations:",
+                "User Prompt: ",
+            ]
 
+        print ("Sana: encoding prompt ...", end="\r", flush=True)
+        pos_embeds, pos_attention, neg_embeds, neg_attention = SanaStorage.pipeTE.encode_prompt(
+            positive_prompt,
+            negative_prompt             = negative_prompt,
+            complex_human_instruction   = None if not SanaStorage.CHI else CHI
+        )
         print ("Sana: encoding prompt ... done")
+
         SanaStorage.pos_embeds    = pos_embeds.to('cuda').to(dtype)
         SanaStorage.neg_embeds    = neg_embeds.to('cuda').to(dtype)
         SanaStorage.pos_attention = pos_attention.to('cuda').to(dtype)
@@ -500,6 +514,7 @@ def on_ui_tabs():
     def toggleC2P ():
         SanaStorage.captionToPrompt ^= True
         return gradio.Button.update(variant=['secondary', 'primary'][SanaStorage.captionToPrompt])
+
     def toggleAccess ():
         SanaStorage.sendAccessToken ^= True
         return gradio.Button.update(variant=['secondary', 'primary'][SanaStorage.sendAccessToken])
@@ -509,29 +524,37 @@ def on_ui_tabs():
         if not SanaStorage.locked:
             SanaStorage.noUnload ^= True
         return gradio.Button.update(variant=['secondary', 'primary'][SanaStorage.noUnload])
+
     def unloadM ():
         if not SanaStorage.locked:
             SanaStorage.pipeTR = None
             SanaStorage.lastModel = None
+            shared.SuperPrompt_tokenizer = None
+            shared.SuperPrompt_model = None
+
             gc.collect()
             torch.cuda.empty_cache()
         else:
             gradio.Info('Unable to unload models while using them.')
+
     def toggleKarras ():
         if not SanaStorage.locked:
             SanaStorage.karras ^= True
         return gradio.Button.update(variant='primary' if SanaStorage.karras == True else 'secondary',
                                 value='\U0001D40A' if SanaStorage.karras == True else '\U0001D542')
+
+    def toggleCHI ():
+        if not SanaStorage.locked:
+            SanaStorage.CHI ^= True
+            SanaStorage.lastPrompt = None
+        return gradio.Button.update(variant='primary' if SanaStorage.CHI == True else 'secondary')
+
     def toggleResBin ():
         if not SanaStorage.locked:
             SanaStorage.resolutionBin ^= True
         return gradio.Button.update(variant='primary' if SanaStorage.resolutionBin == True else 'secondary',
                                 value='\U0001D401' if SanaStorage.resolutionBin == True else '\U0001D539')
-#    def toggleVP ():
-#        if not SanaStorage.locked:
-#           SanaStorage.vpred ^= True
-#        return gradio.Button.update(variant='primary' if SanaStorage.vpred == True else 'secondary',
-#                                value='\U0001D415' if SanaStorage.vpred == True else '\U0001D54D')
+
     def toggleAS ():
         if not SanaStorage.locked:
             SanaStorage.i2iAllSteps ^= True
@@ -727,7 +750,7 @@ def on_ui_tabs():
                     model = gradio.Dropdown(models_list, label='Model', value=defaultModel, type='value', scale=2)
 #                    scheduler = gradio.Dropdown(schedulerList, label='Sampler', value="UniPC", type='value', scale=1)
                     karras = ToolButton(value="\U0001D542", variant='secondary', tooltip="use Karras sigmas", visible=False)
-#                    vpred = ToolButton(value="\U0001D54D", variant='secondary', tooltip="use v-prediction")
+                    CHI = ToolButton(value="CHI", variant='secondary', tooltip="use complex human instruction")
 
                 with gradio.Row():
                     positive_prompt = gradio.Textbox(label='Prompt', placeholder='Enter a prompt here...', lines=2, show_label=False)
@@ -836,8 +859,6 @@ def on_ui_tabs():
             show_progress=False
         )
 
-
-#        vpred.click(toggleVP, inputs=[], outputs=vpred)
         noUnload.click(toggleNU, inputs=[], outputs=noUnload)
         unloadModels.click(unloadM, inputs=[], outputs=[], show_progress=True)
         maskCopy.click(fn=maskFromImage, inputs=[i2iSource], outputs=[maskSource, maskType])
@@ -849,6 +870,7 @@ def on_ui_tabs():
         parse.click(parsePrompt, inputs=parseCtrls, outputs=parseCtrls, show_progress=False)
         access.click(toggleAccess, inputs=[], outputs=access)
         karras.click(toggleKarras, inputs=[], outputs=karras)
+        CHI.click(toggleCHI, inputs=[], outputs=CHI)
         resBin.click(toggleResBin, inputs=[], outputs=resBin)
         swapper.click(lambda w, h: (h, w), inputs=[width, height], outputs=[width, height], show_progress=False)
         random.click(lambda : -1, inputs=[], outputs=sampling_seed, show_progress=False)

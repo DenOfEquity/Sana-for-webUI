@@ -21,7 +21,7 @@ diffusers>=0.32.0
 
 ---
 >[!NOTE]
-> if **noUnload** is not selected then models are freed after use, reloaded for each run.
+> if **noUnload** is selected then models are kept in memory; otherwise reloaded for each run. The **unload models** button removes them from memory.
 
 ---
 ### almost current UI screenshot ###
@@ -31,6 +31,10 @@ diffusers>=0.32.0
 ---
 <details>
 <summary>Change log</summary>
+
+#### 25/12/2024 (2) ####
+* add complex human instruction toggle (CHI button), for automatic prompt enhancement.
+* avoid unnecessary text encoder load if prompt hasn't changed
 
 #### 25/12/2024 ####
 * add control of shift parameter. From initial tests doesn't seem as useful as with Flux or SD3.
