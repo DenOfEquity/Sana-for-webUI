@@ -32,6 +32,9 @@ diffusers>=0.32.0
 <details>
 <summary>Change log</summary>
 
+#### 26/12/2024 ####
+* fixes for gallery, sending to i2i
+
 #### 25/12/2024 (2) ####
 * add complex human instruction toggle (CHI button), for automatic prompt enhancement.
 * avoid unnecessary text encoder load if prompt hasn't changed
