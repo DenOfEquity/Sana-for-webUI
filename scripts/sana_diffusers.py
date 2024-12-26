@@ -225,7 +225,16 @@ def predict(positive_prompt, negative_prompt, model, width, height, guidance_sca
         )
         SanaStorage.lastModel = model
         SanaStorage.pipeTR.enable_model_cpu_offload()
-#        SanaStorage.pipeTR.vae.enable_slicing() #ineffective?
+
+        if "2Kpx" in model:
+            SanaStorage.pipeTR.vae.enable_slicing()
+            #tiling not yet implemented
+            #slicing not very effective
+            SanaStorage.pipeTR.vae.tile_latent_min_height = 24
+            SanaStorage.pipeTR.vae.tile_latent_min_width = 24
+            SanaStorage.pipeTR.vae.tile_latent_stride_height = 4
+            SanaStorage.pipeTR.vae.tile_latent_stride_width = 4
+
 
     ####    end setup pipe for transformer + VAE
 
@@ -621,7 +630,7 @@ def on_ui_tabs():
         
         for l in range(lineCount):
             if "Prompt" == p[l][0:6]:
-                if ": " == p[l][6:8]:                                   #   mine
+                if ": " == p[l][6:8]:                                   #   mine (old)
                     positive = str(p[l][8:])
                     c = 1
                 elif "Prompt" == p[l] and (l+1 < lineCount):            #   webUI
@@ -637,7 +646,7 @@ def on_ui_tabs():
                 l += 1
 
             elif "Negative" == p[l][0:8]:
-                if ": " == p[l][8:10]:                                  #   mine
+                if ": " == p[l][8:10]:                                  #   mine (old)
                     negative = str(p[l][10:])
                     c = 1
                 elif " prompt: " == p[l][8:17]:                         #   civitAI
@@ -756,7 +765,7 @@ def on_ui_tabs():
                 with gradio.Row():
                     positive_prompt = gradio.Textbox(label='Prompt', placeholder='Enter a prompt here...', lines=2, show_label=False)
                     parse = ToolButton(value="↙️", variant='secondary', tooltip="parse")
-                    SP = ToolButton(value='ꌗ', variant='secondary', tooltip='zero out negative embeds')
+                    SP = ToolButton(value='ꌗ', variant='secondary', tooltip='prompt enhancement')
 
                 with gradio.Row():
                     negative_prompt = gradio.Textbox(label='Negative', placeholder='Negative prompt', lines=1.01, show_label=False)
@@ -825,7 +834,7 @@ def on_ui_tabs():
 
             with gradio.Column():
                 generate_button = gradio.Button(value="Generate", variant='primary', visible=True)
-                output_gallery = gradio.Gallery(label='Output', height="80vh", type='pil', interactive=False, elem_id=f"Sana_gallery",
+                output_gallery = gradio.Gallery(label='Output', height="80vh", type='pil', interactive=False, elem_id="Sana_gallery",
                                             show_label=False, object_fit='contain', visible=True, columns=1, preview=True)
 
 #   caption not displaying linebreaks, alt text does
@@ -838,7 +847,7 @@ def on_ui_tabs():
                 for tabname, button in buttons.items():
                     parameters_copypaste.register_paste_params_button(parameters_copypaste.ParamBinding(
                         paste_button=button, tabname=tabname,
-                        source_text_component=infotext,#positive_prompt,
+                        source_text_component=infotext,
                         source_image_component=output_gallery,
                     ))
 
