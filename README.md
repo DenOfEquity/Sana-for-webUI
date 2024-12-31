@@ -13,7 +13,6 @@ Go to the **Extensions** tab, then **Install from URL**, use the URL for this re
 Easiest way to ensure necessary versions are installed is to edit `requirements_versions.txt` in the webUI folder.
 ```
 diffusers>=0.32.0
-
 ```
 
 ---
@@ -52,7 +51,7 @@ diffusers>=0.32.0
 
 
 ---
-prompt: portrait photograph, woman with red hair, wearing green blazer over yellow tshirt and blue trousers, on sunny beach with dark clouds on horizon
+example:
 
-![portrait photograph, woman with red hair, wearing green blazer over yellow tshirt and blue trousers, on sunny beach with dark clouds on horizon](example.png "20 steps with 1024 model")
+![](example.png "11 steps with 1024 model")
 
