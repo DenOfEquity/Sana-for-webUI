@@ -9,6 +9,10 @@ class SanaStorage:
     pipeTR = None
     lastModel = None
 
+    lora = None
+    lora_scale = 1.0
+    loadedLora = False
+
     lastSeed = -1
     lastPrompt = None
     lastNegative = None
@@ -57,7 +61,7 @@ from diffusers.pipelines.pixart_alpha.pipeline_pixart_alpha import (
     ASPECT_RATIO_1024_BIN,
 )
 from diffusers.pipelines.pixart_alpha.pipeline_pixart_sigma import ASPECT_RATIO_2048_BIN
-
+from diffusers import DPMSolverMultistepScheduler, FlowMatchEulerDiscreteScheduler, FlowMatchHeunDiscreteScheduler
 from diffusers.utils.torch_utils import randn_tensor
 from diffusers.utils import logging
 
@@ -72,16 +76,18 @@ import scripts.sana_pipeline as pipeline
 
 
 # modules/processing.py - don't use ',', '\n', ':' in values
-def create_infotext(model, positive_prompt, negative_prompt, guidance_scale, steps, seed, width, height, PAG_scale, PAG_adapt, shift):
+def create_infotext(model, sampler, positive_prompt, negative_prompt, guidance_scale, guidance_rescale, steps, seed, width, height, PAG_scale, PAG_adapt, shift):
 #    karras = " : Karras" if SanaStorage.karras == True else ""
     CHI = ", CHI: enabled" if SanaStorage.CHI == True else ""
     generation_params = {
         "Steps": steps,
         "CFG scale": f"{guidance_scale}",
+        "CFG rescale": f"{guidance_rescale}",
         "Seed": seed,
         "Size": f"{width}x{height}",
         "PAG": f"{PAG_scale} ({PAG_adapt})",
         "Shift": f"{shift}",
+        "Sampler": f"{sampler}",
     }
 #add i2i marker?
     prompt_text = f"{positive_prompt}\n"
@@ -92,7 +98,7 @@ def create_infotext(model, positive_prompt, negative_prompt, guidance_scale, ste
 
     return f"{prompt_text}{generation_params_text}{noise_text}{CHI}, Model (Sana): {model}"
 
-def predict(positive_prompt, negative_prompt, model, width, height, guidance_scale, num_steps, sampling_seed, num_images, i2iSource, i2iDenoise, style, PAG_scale, PAG_adapt, maskType, maskSource, maskBlur, maskCutOff, shift, *args):
+def predict(positive_prompt, negative_prompt, model, sampler, width, height, guidance_scale, guidance_rescale, num_steps, sampling_seed, num_images, i2iSource, i2iDenoise, style, PAG_scale, PAG_adapt, maskType, maskSource, maskBlur, maskCutOff, shift, *args):
  
     logging.set_verbosity(logging.ERROR)        #   diffusers and transformers both enjoy spamming the console with useless info
  
@@ -115,7 +121,11 @@ def predict(positive_prompt, negative_prompt, model, width, height, guidance_sca
     if style != 0:
         positive_prompt = styles.styles_list[style][1].replace("{prompt}", positive_prompt)
         negative_prompt = negative_prompt + styles.styles_list[style][2]
-        
+
+    if PAG_scale > 0.0:
+        if guidance_rescale < 1.0:
+            guidance_rescale = 1.0
+
     ####    check img2img
     if i2iSource == None:
         maskType = 0
@@ -212,11 +222,14 @@ def predict(positive_prompt, negative_prompt, model, width, height, guidance_sca
 
     if SanaStorage.lastModel != model:
         SanaStorage.pipeTR = None
-    
+
+    # scheduler = DPMSolverMultistepScheduler.from_pretrained(model, subfolder="scheduler")
+
     ####    setup pipe for transformer + VAE
     if SanaStorage.pipeTR == None:
         SanaStorage.pipeTR = pipeline.Sana_Pipeline_DoE.from_pretrained(
             model,
+#            scheduler=scheduler, 
             tokenizer=None,
             text_encoder=None,
             variant=variant,
@@ -234,35 +247,40 @@ def predict(positive_prompt, negative_prompt, model, width, height, guidance_sca
             SanaStorage.pipeTR.vae.tile_latent_min_width = 24
             SanaStorage.pipeTR.vae.tile_latent_stride_height = 4
             SanaStorage.pipeTR.vae.tile_latent_stride_width = 4
-
-
     ####    end setup pipe for transformer + VAE
 
 
     ####    shift
     SanaStorage.pipeTR.scheduler.config.flow_shift = shift
 
-
+    if sampler == "Euler":
+        scheduler = FlowMatchEulerDiscreteScheduler.from_config(SanaStorage.pipeTR.scheduler.config)
+    elif sampler == "Heun":
+        scheduler = FlowMatchHeunDiscreteScheduler.from_config(SanaStorage.pipeTR.scheduler.config)
+    elif sampler == "DPM++ 2M":
+        scheduler = DPMSolverMultistepScheduler.from_config(SanaStorage.pipeTR.scheduler.config)
+    else:
+        scheduler = DPMSolverMultistepScheduler.from_config(SanaStorage.pipeTR.scheduler.config)
+    SanaStorage.pipeTR.scheduler = scheduler
 
     # gc.collect()
     # torch.cuda.empty_cache()
 
-
-
-#   lora test - diffusers type, PEFT
-#   seems to work, but base model better
-#   possibly: model.load_adapter(loraRepo)
-#             model.unload()                #   but are these in PixArtTransformer?
-##    if isSigma and not is2Stage:
-##        try:
-##            loraRepo = './/models//diffusers//PixArtLora//pocketCreatures1024'
-##            SanaStorage.pipeTR.transformer = PeftModel.from_pretrained(
-##                SanaStorage.pipeTR.transformer,
-##                loraRepo
-##            )
-##        except:
-##            pass
-
+#   load in LoRA
+    if SanaStorage.lora and SanaStorage.lora != "(None)" and SanaStorage.lora_scale != 0.0:
+        lorapath = ".//models/diffusers//SanaLora//"
+        loraname = SanaStorage.lora + ".safetensors"
+        try:
+            SanaStorage.pipeTR.load_lora_weights(lorapath, weight_name=loraname, local_files_only=True, adapter_name="lora")
+            SanaStorage.loadedLora = True
+            scales = {
+                "unet": SanaStorage.lora_scale
+            }
+            SanaStorage.pipeTR.set_adapters("lora", scales)
+#            pipe.set_adapters(SanaStorage.lora, adapter_weights=SanaStorage.lora_scale)
+        except:
+            print ("Sana: failed LoRA: " + lorafile)
+            #   no reason to abort, just carry on without LoRA
 
 
     #   if using resolution_binning, must use adjusted width/height here (don't overwrite values)
@@ -345,6 +363,7 @@ def predict(positive_prompt, negative_prompt, model, width, height, guidance_sca
 
     SanaStorage.pipeTR.transformer.to('cuda')
     SanaStorage.pipeTR.vae.to('cpu')
+    gc.collect()
     torch.cuda.empty_cache()
 
     with torch.inference_mode():
@@ -364,6 +383,7 @@ def predict(positive_prompt, negative_prompt, model, width, height, guidance_sca
             height                          = height,
             width                           = width,
             guidance_scale                  = guidance_scale,
+            guidance_rescale                = guidance_rescale,
             prompt_embeds                   = SanaStorage.pos_embeds,
             negative_prompt_embeds          = SanaStorage.neg_embeds,
             prompt_attention_mask           = SanaStorage.pos_attention,
@@ -372,18 +392,23 @@ def predict(positive_prompt, negative_prompt, model, width, height, guidance_sca
 
             pag_scale                       = PAG_scale,
             pag_adaptive_scale              = PAG_adapt,
-            
+
             output_type                     = "latent",
         ).images
 
     if SanaStorage.noUnload:
+        if SanaStorage.loadedLora == True:
+            SanaStorage.pipeTR.unload_lora_weights()
+            SanaStorage.loadedLora = False
         SanaStorage.pipeTR.transformer.to('cpu')
-        torch.cuda.empty_cache()
     else:
         SanaStorage.pipeTR.transformer = None
         SanaStorage.lastModel = None
 
     del generator, latents
+
+    gc.collect()
+    torch.cuda.empty_cache()
 
     SanaStorage.pipeTR.vae.to('cuda')
 
@@ -398,9 +423,9 @@ def predict(positive_prompt, negative_prompt, model, width, height, guidance_sca
         image = SanaStorage.pipeTR.image_processor.postprocess(image, output_type="pil")[0]
 
         info=create_infotext(
-            model,
+            model, sampler, 
             positive_prompt, negative_prompt,
-            guidance_scale, 
+            guidance_scale, guidance_rescale, 
             num_steps, 
             fixed_seed + i, 
             width, height,
@@ -444,7 +469,25 @@ def on_ui_tabs():
     defaultModel = models_list[3]
     defaultWidth = 1024
     defaultHeight = 1024
-    
+ 
+    def buildLoRAList ():
+        loras = ["(None)"]
+        
+        import glob
+        customLoRA = glob.glob(".\models\diffusers\SanaLora\*.safetensors")
+
+        for i in customLoRA:
+            filename = i.split('\\')[-1]
+            loras.append(filename[0:-12])
+
+        return loras
+
+    loras = buildLoRAList ()
+
+    def refreshLoRAs ():
+        loras = buildLoRAList ()
+        return gradio.Dropdown.update(choices=loras)
+ 
     def getGalleryIndex (index):
         return index
 
@@ -606,15 +649,17 @@ def on_ui_tabs():
 
 
 
-    def toggleGenerate (R, G, B, A):
+    def toggleGenerate (R, G, B, A, lora, scale):
         SanaStorage.noiseRGBA = [R, G, B, A]
+        SanaStorage.lora = lora
+        SanaStorage.lora_scale = scale# if lora != "(None)" else 1.0
         SanaStorage.locked = True
         return gradio.Button.update(value='...', variant='secondary', interactive=False), gradio.Button.update(interactive=False)
 
     schedulerList = ["default", "DDPM", "DEIS", "DPM++ 2M", "DPM++ 2M SDE", "DPM", "DPM SDE",
                      "Euler", "Euler A", "LCM", "SA-solver", "UniPC", ]
 
-    def parsePrompt (positive, negative, width, height, seed, steps, cfg, nr, ng, nb, ns, PAG_scale, PAG_adapt, shift):
+    def parsePrompt (positive, negative, sampler, width, height, seed, steps, cfg, rescale, nr, ng, nb, ns, PAG_scale, PAG_adapt, shift):
         p = positive.split('\n')
         lineCount = len(p)
 
@@ -689,8 +734,10 @@ def on_ui_tabs():
                         case "CFG":
                             if "scale:" == pairs[1]:
                                 cfg = float(pairs[2])
-                        case "CFG:":
-                            cfg = float(pairs[1])
+                            elif "rescale:" == pairs[1]:
+                                rescale = float(pairs[2])
+                            else:
+                                cfg = float(pairs[1])
                         case "width:":
                             width = 32 * ((int(pairs[1]) + 16) // 32)
                         case "height:":
@@ -701,8 +748,13 @@ def on_ui_tabs():
                                 PAG_adapt = float(pairs[2].strip('\(\)'))
                         case "Shift:":
                             shift = float(pairs[1])
+                        case "Sampler:":
+                            if len(pairs) == 3:
+                                sampler = f"{pairs[1]} {pairs[2]}"
+                            else:
+                                sampler = pairs[1]
 
-        return positive, negative, width, height, seed, steps, cfg, nr, ng, nb, ns, PAG_scale, PAG_adapt, shift
+        return positive, negative, sampler, width, height, seed, steps, cfg, rescale, nr, ng, nb, ns, PAG_scale, PAG_adapt, shift
 
     resolutionList512 = [
         (1024, 256),    (864, 288),     (704, 352),     (640, 384),     (608, 416),
@@ -758,9 +810,9 @@ def on_ui_tabs():
                 with gradio.Row():
                     access = ToolButton(value='\U0001F917', variant='secondary', visible=False)
                     model = gradio.Dropdown(models_list, label='Model', value=defaultModel, type='value', scale=2)
-#                    scheduler = gradio.Dropdown(schedulerList, label='Sampler', value="UniPC", type='value', scale=1)
                     karras = ToolButton(value="\U0001D542", variant='secondary', tooltip="use Karras sigmas", visible=False)
                     CHI = ToolButton(value="CHI", variant='secondary', tooltip="use complex human instruction")
+                    sampler = gradio.Dropdown(["DPM++ 2M", "Euler", "Heun"], label='Sampler', value="DPM++ 2M", type='value', scale=0)
 
                 with gradio.Row():
                     positive_prompt = gradio.Textbox(label='Prompt', placeholder='Enter a prompt here...', lines=2, show_label=False)
@@ -779,17 +831,23 @@ def on_ui_tabs():
                                         label='Quickset', type='value', scale=0)
 
                 with gradio.Row():
-                    guidance_scale = gradio.Slider(label='CFG', minimum=1, maximum=8, step=0.1, value=4.0, scale=1, visible=True)
+                    guidance_scale = gradio.Slider(label='CFG', minimum=1, maximum=12, step=0.1, value=4.0, scale=1, visible=True)
+                    CFGrescale = gradio.Slider(label='rescale CFG', minimum=0.00, maximum=1.0, step=0.01, value=0.0, scale=1)
                     shift = gradio.Slider(label='Shift', minimum=1, maximum=8.0, step=0.01, value=3.0, scale=1)
-                    steps = gradio.Slider(label='Steps', minimum=1, maximum=60, step=1, value=20, scale=2, visible=True)
                 with gradio.Row():
                     PAG_scale = gradio.Slider(label='Perturbed-Attention Guidance scale', minimum=0, maximum=8, step=0.1, value=0.0, scale=1, visible=True)
                     PAG_adapt = gradio.Slider(label='PAG adaptive scale', minimum=0.00, maximum=0.1, step=0.001, value=0.0, scale=1)
                 with gradio.Row():
+                    steps = gradio.Slider(label='Steps', minimum=1, maximum=60, step=1, value=11, scale=1, visible=True)
                     sampling_seed = gradio.Number(label='Seed', value=-1, precision=0, scale=1)
                     random = ToolButton(value="\U0001f3b2\ufe0f")
                     reuseSeed = ToolButton(value="\u267b\ufe0f")
                     batch_size = gradio.Number(label='Batch Size', minimum=1, maximum=9, value=1, precision=0, scale=0)
+
+                with gradio.Row(equal_height=True):
+                    lora = gradio.Dropdown([x for x in loras], label='LoRA (place in models/diffusers/SanaLora)', value="(None)", type='value', multiselect=False, scale=2)
+                    refreshL = ToolButton(value='\U0001f504')
+                    scale = gradio.Slider(label='LoRA weight', minimum=-1.0, maximum=1.0, value=1.0, step=0.01, scale=1)
 
                 with gradio.Accordion(label='the colour of noise', open=False):
                     with gradio.Row():
@@ -828,9 +886,9 @@ def on_ui_tabs():
                     noUnload = gradio.Button(value='keep models loaded', variant='primary' if SanaStorage.noUnload else 'secondary', tooltip='noUnload', scale=1)
                     unloadModels = gradio.Button(value='unload models', tooltip='force unload of models', scale=1)
 
-                ctrls = [positive_prompt, negative_prompt, model, width, height, guidance_scale, steps, sampling_seed, batch_size, i2iSource, i2iDenoise, style, PAG_scale, PAG_adapt, maskType, maskSource, maskBlur, maskCut, shift]
+                ctrls = [positive_prompt, negative_prompt, model, sampler, width, height, guidance_scale, CFGrescale, steps, sampling_seed, batch_size, i2iSource, i2iDenoise, style, PAG_scale, PAG_adapt, maskType, maskSource, maskBlur, maskCut, shift]
                 
-                parseCtrls = [positive_prompt, negative_prompt, width, height, sampling_seed, steps, guidance_scale, initialNoiseR, initialNoiseG, initialNoiseB, initialNoiseA, PAG_scale, PAG_adapt, shift]
+                parseCtrls = [positive_prompt, negative_prompt, sampler, width, height, sampling_seed, steps, guidance_scale, CFGrescale, initialNoiseR, initialNoiseG, initialNoiseB, initialNoiseA, PAG_scale, PAG_adapt, shift]
 
             with gradio.Column():
                 generate_button = gradio.Button(value="Generate", variant='primary', visible=True)
@@ -886,6 +944,7 @@ def on_ui_tabs():
         random.click(lambda : -1, inputs=[], outputs=sampling_seed, show_progress=False)
         reuseSeed.click(reuseLastSeed, inputs=gallery_index, outputs=sampling_seed, show_progress=False)
         AS.click(toggleAS, inputs=[], outputs=AS)
+        refreshL.click(refreshLoRAs, inputs=[], outputs=[lora])
 
         i2iSetWH.click (fn=i2iSetDimensions, inputs=[i2iSource, width, height], outputs=[width, height], show_progress=False)
         i2iFromGallery.click (fn=i2iImageFromGallery, inputs=[output_gallery, gallery_index], outputs=[i2iSource])
@@ -894,7 +953,7 @@ def on_ui_tabs():
 
         output_gallery.select(fn=getGalleryIndex, js="selected_gallery_index", inputs=gallery_index, outputs=gallery_index).then(fn=getGalleryText, inputs=[output_gallery, gallery_index], outputs=[infotext])
 
-        generate_button.click(toggleGenerate, inputs=[initialNoiseR, initialNoiseG, initialNoiseB, initialNoiseA], outputs=[generate_button, SP]).then(predict, inputs=ctrls, outputs=[generate_button, SP, output_gallery]).then(fn=lambda: gradio.update(value='Generate', variant='primary', interactive=True), inputs=None, outputs=generate_button).then(fn=getGalleryIndex, js="selected_gallery_index", inputs=gallery_index, outputs=gallery_index).then(fn=getGalleryText, inputs=[output_gallery, gallery_index], outputs=[infotext])
+        generate_button.click(toggleGenerate, inputs=[initialNoiseR, initialNoiseG, initialNoiseB, initialNoiseA, lora, scale], outputs=[generate_button, SP]).then(predict, inputs=ctrls, outputs=[generate_button, SP, output_gallery], show_progress='full').then(fn=lambda: gradio.update(value='Generate', variant='primary', interactive=True), inputs=None, outputs=generate_button).then(fn=getGalleryIndex, js="selected_gallery_index", inputs=gallery_index, outputs=gallery_index).then(fn=getGalleryText, inputs=[output_gallery, gallery_index], outputs=[infotext])
 
     return [(sana_block, "Sana", "sana_DoE")]
 
