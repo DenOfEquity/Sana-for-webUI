@@ -31,6 +31,10 @@ diffusers>=0.32.0
 <details>
 <summary>Change log</summary>
 
+#### 01/01/2025 ####
+* add initial sampler selection, not sure how many will work yet. *Euler* and *Heun* need more steps than *DPM++ 2M*.
+* add rescale CFG, can be very effective
+
 #### 26/12/2024 ####
 * fixes for gallery, sending to i2i
 
