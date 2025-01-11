@@ -31,6 +31,11 @@ diffusers>=0.32.0
 <details>
 <summary>Change log</summary>
 
+#### 11/01/2025 ####
+* add 4K model (unlikely to work until diffusers adds VAE tiling)
+* changes to model loading so VAE only downloaded once regardless of how many models are used
+* and should not download the fp32 transformer models anymore (not sure why pipeline.from_pretrained() loading ignored the variant specified, but loading the transformer separately avoids the issue)
+
 #### 01/01/2025 ####
 * add initial sampler selection, not sure how many will work yet. *Euler* and *Heun* need more steps than *DPM++ 2M*.
 * add rescale CFG, can be very effective
