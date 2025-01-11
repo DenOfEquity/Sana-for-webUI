@@ -61,6 +61,8 @@ from diffusers.pipelines.pixart_alpha.pipeline_pixart_alpha import (
     ASPECT_RATIO_1024_BIN,
 )
 from diffusers.pipelines.pixart_alpha.pipeline_pixart_sigma import ASPECT_RATIO_2048_BIN
+from scripts.sana_pipeline import ASPECT_RATIO_4096_BIN
+
 from diffusers import DPMSolverMultistepScheduler, FlowMatchEulerDiscreteScheduler, FlowMatchHeunDiscreteScheduler
 from diffusers.utils.torch_utils import randn_tensor
 from diffusers.utils import logging
@@ -123,8 +125,7 @@ def predict(positive_prompt, negative_prompt, model, sampler, width, height, gui
         negative_prompt = negative_prompt + styles.styles_list[style][2]
 
     if PAG_scale > 0.0:
-        if guidance_rescale < 1.0:
-            guidance_rescale = 1.0
+        guidance_rescale = 0.0
 
     ####    check img2img
     if i2iSource == None:
@@ -223,15 +224,18 @@ def predict(positive_prompt, negative_prompt, model, sampler, width, height, gui
     if SanaStorage.lastModel != model:
         SanaStorage.pipeTR = None
 
-    # scheduler = DPMSolverMultistepScheduler.from_pretrained(model, subfolder="scheduler")
 
     ####    setup pipe for transformer + VAE
+    ### #   shared VAE, save ~1.16GB per model (after 1600M_1024px)
     if SanaStorage.pipeTR == None:
+        from diffusers.models import AutoencoderDC, SanaTransformer2DModel
+
         SanaStorage.pipeTR = pipeline.Sana_Pipeline_DoE.from_pretrained(
             model,
-#            scheduler=scheduler, 
             tokenizer=None,
             text_encoder=None,
+            vae=AutoencoderDC.from_pretrained("Efficient-Large-Model/Sana_1600M_1024px_BF16_diffusers", subfolder="vae", variant="bf16"),
+            transformer=SanaTransformer2DModel.from_pretrained(model, subfolder="transformer", variant=variant),
             variant=variant,
             torch_dtype=dtype,
             pag_applied_layers=["transformer_blocks.8"],
@@ -239,14 +243,8 @@ def predict(positive_prompt, negative_prompt, model, sampler, width, height, gui
         SanaStorage.lastModel = model
         SanaStorage.pipeTR.enable_model_cpu_offload()
 
-        if "2Kpx" in model:
-            SanaStorage.pipeTR.vae.enable_slicing()
-            #tiling not yet implemented
-            #slicing not very effective
-            SanaStorage.pipeTR.vae.tile_latent_min_height = 24
-            SanaStorage.pipeTR.vae.tile_latent_min_width = 24
-            SanaStorage.pipeTR.vae.tile_latent_stride_height = 4
-            SanaStorage.pipeTR.vae.tile_latent_stride_width = 4
+        if "2Kpx" in model or "4Kpx" in model:
+            SanaStorage.pipeTR.vae.enable_tiling()
     ####    end setup pipe for transformer + VAE
 
 
@@ -286,6 +284,8 @@ def predict(positive_prompt, negative_prompt, model, sampler, width, height, gui
     #   if using resolution_binning, must use adjusted width/height here (don't overwrite values)
     if SanaStorage.resolutionBin:
         match SanaStorage.pipeTR.transformer.config.sample_size:
+            case 128:
+                aspect_ratio_bin = ASPECT_RATIO_4096_BIN
             case 64:
                 aspect_ratio_bin = ASPECT_RATIO_2048_BIN
             case 32:
@@ -465,7 +465,7 @@ def on_ui_tabs():
         reload(styles)
         reload(pipeline)
     
-    models_list = ["Efficient-Large-Model/Sana_600M_512px_diffusers", "Efficient-Large-Model/Sana_600M_1024px_diffusers", "Efficient-Large-Model/Sana_1600M_512px_diffusers", "Efficient-Large-Model/Sana_1600M_1024px_BF16_diffusers", "Efficient-Large-Model/Sana_1600M_2Kpx_BF16_diffusers"]
+    models_list = ["Efficient-Large-Model/Sana_600M_512px_diffusers", "Efficient-Large-Model/Sana_600M_1024px_diffusers", "Efficient-Large-Model/Sana_1600M_512px_diffusers", "Efficient-Large-Model/Sana_1600M_1024px_BF16_diffusers", "Efficient-Large-Model/Sana_1600M_2Kpx_BF16_diffusers", "Efficient-Large-Model/Sana_1600M_4Kpx_BF16_diffusers"]
     defaultModel = models_list[3]
     defaultWidth = 1024
     defaultHeight = 1024
@@ -771,6 +771,11 @@ def on_ui_tabs():
         (2048, 2048),
         (1664, 2432),   (1536, 2560),   (1408, 2816),   (1152, 3456),   (1024, 4096)
     ]
+    resolutionList4096 = [
+        (8192, 2048),   (6912, 2304),   (5632, 2816),   (5120, 3072),   (4864, 3328),
+        (4096, 4096),
+        (3328, 4864),   (3072, 5120),   (2816, 5632),   (2304, 6912),   (2048, 8192)
+    ]
 
 
     def updateWH (dims, w, h):
@@ -780,18 +785,6 @@ def on_ui_tabs():
         wh = dims.split('\u00D7')
         return None, int(wh[0]), int(wh[1])
 
-    def processCN (image, method):
-        if image:
-            if method == 1:     # generate HED edge
-                try:
-                    from controlnet_aux import HEDdetector
-                    hed = HEDdetector.from_pretrained("lllyasviel/Annotators")
-                    hed_edge = hed(image)
-                    return hed_edge
-                except:
-                    print ("Need controlAux package to preprocess.")
-                    return image
-        return image
     def toggleSharp ():
         SanaStorage.sharpNoise ^= True
         return gradio.Button.update(value=['s', 'S'][SanaStorage.sharpNoise],
@@ -914,6 +907,8 @@ def on_ui_tabs():
                 resList = resolutionList512
             elif "2K" in model or "2048" in model:
                 resList = resolutionList2048
+            elif "4K" in model or "4096" in model:
+                resList = resolutionList4096
             else:
                 resList = resolutionList1024
 
