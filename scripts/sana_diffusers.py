@@ -20,6 +20,8 @@ class SanaStorage:
     pos_attention = None
     neg_embeds = None
     neg_attention = None
+    nul_embeds = None
+    nul_attention = None
     noiseRGBA = [0.0, 0.0, 0.0, 0.0]
     captionToPrompt = False
     sendAccessToken = False
@@ -29,6 +31,7 @@ class SanaStorage:
     noUnload = False
     karras = False
     CHI = False
+    biasCFG = False
     resolutionBin = True
     sharpNoise = False
     i2iAllSteps = False
@@ -81,6 +84,7 @@ import scripts.sana_pipeline as pipeline
 def create_infotext(model, sampler, positive_prompt, negative_prompt, guidance_scale, guidance_rescale, steps, seed, width, height, PAG_scale, PAG_adapt, shift):
 #    karras = " : Karras" if SanaStorage.karras == True else ""
     CHI = ", CHI: enabled" if SanaStorage.CHI == True else ""
+    bCFG = ", biasCorrectionCFG: enabled" if SanaStorage.biasCFG == True else ""
     generation_params = {
         "Steps": steps,
         "CFG scale": f"{guidance_scale}",
@@ -98,7 +102,7 @@ def create_infotext(model, sampler, positive_prompt, negative_prompt, guidance_s
     generation_params_text = ", ".join([k if k == v else f'{k}: {v}' for k, v in generation_params.items() if v is not None])
     noise_text = f", Initial noise: {SanaStorage.noiseRGBA}" if SanaStorage.noiseRGBA[3] != 0.0 else ""
 
-    return f"{prompt_text}{generation_params_text}{noise_text}{CHI}, Model (Sana): {model}"
+    return f"{prompt_text}{generation_params_text}{noise_text}{CHI}{bCFG}, Model (Sana): {model}"
 
 def predict(positive_prompt, negative_prompt, model, sampler, width, height, guidance_scale, guidance_rescale, num_steps, sampling_seed, num_images, i2iSource, i2iDenoise, style, PAG_scale, PAG_adapt, maskType, maskSource, maskBlur, maskCutOff, shift, *args):
  
@@ -201,19 +205,32 @@ def predict(positive_prompt, negative_prompt, model, sampler, width, height, gui
             ]
 
         print ("Sana: encoding prompt ...", end="\r", flush=True)
-        pos_embeds, pos_attention, neg_embeds, neg_attention = SanaStorage.pipeTE.encode_prompt(
+        pos_embeds, pos_attention = SanaStorage.pipeTE.encode_prompt(
             positive_prompt,
-            negative_prompt             = negative_prompt,
             complex_human_instruction   = None if not SanaStorage.CHI else CHI
         )
+        SanaStorage.pos_embeds    = pos_embeds.to('cuda').to(dtype)
+        SanaStorage.pos_attention = pos_attention.to('cuda').to(dtype)
+        del pos_embeds, pos_attention
+
+        neg_embeds, neg_attention = SanaStorage.pipeTE.encode_prompt(
+            negative_prompt,
+            complex_human_instruction   = None
+        )
+        SanaStorage.neg_embeds    = neg_embeds.to('cuda').to(dtype)
+        SanaStorage.neg_attention = neg_attention.to('cuda').to(dtype)
+        del neg_embeds, neg_attention
+
+        if SanaStorage.nul_embeds is None:
+            nul_embeds, nul_attention = SanaStorage.pipeTE.encode_prompt(
+                "",
+                complex_human_instruction   = None
+            )
+            SanaStorage.nul_embeds    = nul_embeds.to('cuda').to(dtype)
+            SanaStorage.nul_attention = nul_attention.to('cuda').to(dtype)
+            del nul_embeds, nul_attention
         print ("Sana: encoding prompt ... done")
 
-        SanaStorage.pos_embeds    = pos_embeds.to('cuda').to(dtype)
-        SanaStorage.neg_embeds    = neg_embeds.to('cuda').to(dtype)
-        SanaStorage.pos_attention = pos_attention.to('cuda').to(dtype)
-        SanaStorage.neg_attention = neg_attention.to('cuda').to(dtype)
-
-        del pos_embeds, neg_embeds, pos_attention, neg_attention
 
         if SanaStorage.noUnload:
             SanaStorage.pipeTE.to('cpu')
@@ -382,13 +399,17 @@ def predict(positive_prompt, negative_prompt, model, sampler, width, height, gui
             num_images_per_prompt           = num_images,
             height                          = height,
             width                           = width,
-            guidance_scale                  = guidance_scale,
+            guidance_scale                  = 1.0 if negative_prompt == "" else guidance_scale,
             guidance_rescale                = guidance_rescale,
             prompt_embeds                   = SanaStorage.pos_embeds,
             negative_prompt_embeds          = SanaStorage.neg_embeds,
+            nul_prompt_embeds               = SanaStorage.nul_embeds,
             prompt_attention_mask           = SanaStorage.pos_attention,
             negative_prompt_attention_mask  = SanaStorage.neg_attention,
+            nul_prompt_attention_mask       = SanaStorage.nul_attention,
             use_resolution_binning          = SanaStorage.resolutionBin,
+            
+            do_bias_CFG                     = False if negative_prompt == "" else SanaStorage.biasCFG,
 
             pag_scale                       = PAG_scale,
             pag_adaptive_scale              = PAG_adapt,
@@ -601,6 +622,11 @@ def on_ui_tabs():
             SanaStorage.CHI ^= True
             SanaStorage.lastPrompt = None
         return gradio.Button.update(variant='primary' if SanaStorage.CHI == True else 'secondary')
+
+    def toggleBiasCFG ():
+        if not SanaStorage.locked:
+            SanaStorage.biasCFG ^= True
+        return gradio.Button.update(variant='primary' if SanaStorage.biasCFG == True else 'secondary')
 
     def toggleResBin ():
         if not SanaStorage.locked:
@@ -824,9 +850,10 @@ def on_ui_tabs():
                                         label='Quickset', type='value', scale=0)
 
                 with gradio.Row():
-                    guidance_scale = gradio.Slider(label='CFG', minimum=1, maximum=12, step=0.1, value=4.0, scale=1, visible=True)
+                    guidance_scale = gradio.Slider(label='CFG', minimum=1, maximum=16, step=0.1, value=4.0, scale=1, visible=True)
                     CFGrescale = gradio.Slider(label='rescale CFG', minimum=0.00, maximum=1.0, step=0.01, value=0.0, scale=1)
-                    shift = gradio.Slider(label='Shift', minimum=1, maximum=8.0, step=0.01, value=3.0, scale=1)
+                    bCFG = ToolButton(value="0", variant='secondary', tooltip="use bias CFG correction")
+                    shift = gradio.Slider(label='Shift', minimum=1, maximum=8.0, step=0.01, value=3.0, scale=0)
                 with gradio.Row():
                     PAG_scale = gradio.Slider(label='Perturbed-Attention Guidance scale', minimum=0, maximum=8, step=0.1, value=0.0, scale=1, visible=True)
                     PAG_adapt = gradio.Slider(label='PAG adaptive scale', minimum=0.00, maximum=0.1, step=0.001, value=0.0, scale=1)
@@ -934,6 +961,7 @@ def on_ui_tabs():
         access.click(toggleAccess, inputs=[], outputs=access)
         karras.click(toggleKarras, inputs=[], outputs=karras)
         CHI.click(toggleCHI, inputs=[], outputs=CHI)
+        bCFG.click(toggleBiasCFG, inputs=[], outputs=bCFG)
         resBin.click(toggleResBin, inputs=[], outputs=resBin)
         swapper.click(lambda w, h: (h, w), inputs=[width, height], outputs=[width, height], show_progress=False)
         random.click(lambda : -1, inputs=[], outputs=sampling_seed, show_progress=False)

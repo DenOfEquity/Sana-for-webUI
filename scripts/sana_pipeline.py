@@ -236,14 +236,10 @@ class Sana_Pipeline_DoE(DiffusionPipeline, PAGMixin):
     def encode_prompt(
         self,
         prompt: Union[str, List[str]],
-        do_classifier_free_guidance: bool = True,
-        negative_prompt: str = "",
         num_images_per_prompt: int = 1,
         device: Optional[torch.device] = None,
         prompt_embeds: Optional[torch.Tensor] = None,
-        negative_prompt_embeds: Optional[torch.Tensor] = None,
         prompt_attention_mask: Optional[torch.Tensor] = None,
-        negative_prompt_attention_mask: Optional[torch.Tensor] = None,
         clean_caption: bool = False,
         max_sequence_length: int = 300,
         complex_human_instruction: Optional[List[str]] = None,
@@ -254,12 +250,6 @@ class Sana_Pipeline_DoE(DiffusionPipeline, PAGMixin):
         Args:
             prompt (`str` or `List[str]`, *optional*):
                 prompt to be encoded
-            negative_prompt (`str` or `List[str]`, *optional*):
-                The prompt not to guide the image generation. If not defined, one has to pass `negative_prompt_embeds`
-                instead. Ignored when not using guidance (i.e., ignored if `guidance_scale` is less than `1`). For
-                PixArt-Alpha, this should be "".
-            do_classifier_free_guidance (`bool`, *optional*, defaults to `True`):
-                whether to use classifier free guidance or not
             num_images_per_prompt (`int`, *optional*, defaults to 1):
                 number of images that should be generated per prompt
             device: (`torch.device`, *optional*):
@@ -267,8 +257,6 @@ class Sana_Pipeline_DoE(DiffusionPipeline, PAGMixin):
             prompt_embeds (`torch.Tensor`, *optional*):
                 Pre-generated text embeddings. Can be used to easily tweak text inputs, *e.g.* prompt weighting. If not
                 provided, text embeddings will be generated from `prompt` input argument.
-            negative_prompt_embeds (`torch.Tensor`, *optional*):
-                Pre-generated negative text embeddings. For Sana, it's should be the embeddings of the "" string.
             clean_caption (`bool`, defaults to `False`):
                 If `True`, the function will preprocess and clean the provided caption before encoding.
             max_sequence_length (`int`, defaults to 300): Maximum sequence length to use for the prompt.
@@ -339,44 +327,7 @@ class Sana_Pipeline_DoE(DiffusionPipeline, PAGMixin):
         prompt_attention_mask = prompt_attention_mask.view(bs_embed, -1)
         prompt_attention_mask = prompt_attention_mask.repeat(num_images_per_prompt, 1)
 
-        # get unconditional embeddings for classifier free guidance
-        if do_classifier_free_guidance and negative_prompt_embeds is None:
-            uncond_tokens = [negative_prompt] * batch_size if isinstance(negative_prompt, str) else negative_prompt
-            uncond_tokens = self._text_preprocessing(uncond_tokens, clean_caption=clean_caption)
-            max_length = prompt_embeds.shape[1]
-            uncond_input = self.tokenizer(
-                uncond_tokens,
-                padding="max_length",
-                max_length=max_length,
-                truncation=True,
-                return_attention_mask=True,
-                add_special_tokens=True,
-                return_tensors="pt",
-            )
-            negative_prompt_attention_mask = uncond_input.attention_mask
-            negative_prompt_attention_mask = negative_prompt_attention_mask.to(device)
-
-            negative_prompt_embeds = self.text_encoder(
-                uncond_input.input_ids.to(device), attention_mask=negative_prompt_attention_mask
-            )
-            negative_prompt_embeds = negative_prompt_embeds[0]
-
-        if do_classifier_free_guidance:
-            # duplicate unconditional embeddings for each generation per prompt, using mps friendly method
-            seq_len = negative_prompt_embeds.shape[1]
-
-            negative_prompt_embeds = negative_prompt_embeds.to(dtype=dtype, device=device)
-
-            negative_prompt_embeds = negative_prompt_embeds.repeat(1, num_images_per_prompt, 1)
-            negative_prompt_embeds = negative_prompt_embeds.view(batch_size * num_images_per_prompt, seq_len, -1)
-
-            negative_prompt_attention_mask = negative_prompt_attention_mask.view(bs_embed, -1)
-            negative_prompt_attention_mask = negative_prompt_attention_mask.repeat(num_images_per_prompt, 1)
-        else:
-            negative_prompt_embeds = None
-            negative_prompt_attention_mask = None
-
-        return prompt_embeds, prompt_attention_mask, negative_prompt_embeds, negative_prompt_attention_mask
+        return prompt_embeds, prompt_attention_mask
 
     # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.StableDiffusionPipeline.prepare_extra_step_kwargs
     def prepare_extra_step_kwargs(self, generator, eta):
@@ -407,74 +358,7 @@ class Sana_Pipeline_DoE(DiffusionPipeline, PAGMixin):
 
         return timesteps, num_inference_steps - t_start
 
-    # Copied from diffusers.pipelines.sana.pipeline_sana.SanaPipeline.check_inputs
-    def check_inputs(
-        self,
-        prompt,
-        height,
-        width,
-        callback_on_step_end_tensor_inputs=None,
-        negative_prompt=None,
-        prompt_embeds=None,
-        negative_prompt_embeds=None,
-        prompt_attention_mask=None,
-        negative_prompt_attention_mask=None,
-    ):
-        if height % 32 != 0 or width % 32 != 0:
-            raise ValueError(f"`height` and `width` have to be divisible by 32 but are {height} and {width}.")
-
-        if callback_on_step_end_tensor_inputs is not None and not all(
-            k in self._callback_tensor_inputs for k in callback_on_step_end_tensor_inputs
-        ):
-            raise ValueError(
-                f"`callback_on_step_end_tensor_inputs` has to be in {self._callback_tensor_inputs}, but found {[k for k in callback_on_step_end_tensor_inputs if k not in self._callback_tensor_inputs]}"
-            )
-
-        if prompt is not None and prompt_embeds is not None:
-            raise ValueError(
-                f"Cannot forward both `prompt`: {prompt} and `prompt_embeds`: {prompt_embeds}. Please make sure to"
-                " only forward one of the two."
-            )
-        elif prompt is None and prompt_embeds is None:
-            raise ValueError(
-                "Provide either `prompt` or `prompt_embeds`. Cannot leave both `prompt` and `prompt_embeds` undefined."
-            )
-        elif prompt is not None and (not isinstance(prompt, str) and not isinstance(prompt, list)):
-            raise ValueError(f"`prompt` has to be of type `str` or `list` but is {type(prompt)}")
-
-        if prompt is not None and negative_prompt_embeds is not None:
-            raise ValueError(
-                f"Cannot forward both `prompt`: {prompt} and `negative_prompt_embeds`:"
-                f" {negative_prompt_embeds}. Please make sure to only forward one of the two."
-            )
-
-        if negative_prompt is not None and negative_prompt_embeds is not None:
-            raise ValueError(
-                f"Cannot forward both `negative_prompt`: {negative_prompt} and `negative_prompt_embeds`:"
-                f" {negative_prompt_embeds}. Please make sure to only forward one of the two."
-            )
-
-        if prompt_embeds is not None and prompt_attention_mask is None:
-            raise ValueError("Must provide `prompt_attention_mask` when specifying `prompt_embeds`.")
-
-        if negative_prompt_embeds is not None and negative_prompt_attention_mask is None:
-            raise ValueError("Must provide `negative_prompt_attention_mask` when specifying `negative_prompt_embeds`.")
-
-        if prompt_embeds is not None and negative_prompt_embeds is not None:
-            if prompt_embeds.shape != negative_prompt_embeds.shape:
-                raise ValueError(
-                    "`prompt_embeds` and `negative_prompt_embeds` must have the same shape when passed directly, but"
-                    f" got: `prompt_embeds` {prompt_embeds.shape} != `negative_prompt_embeds`"
-                    f" {negative_prompt_embeds.shape}."
-                )
-            if prompt_attention_mask.shape != negative_prompt_attention_mask.shape:
-                raise ValueError(
-                    "`prompt_attention_mask` and `negative_prompt_attention_mask` must have the same shape when passed directly, but"
-                    f" got: `prompt_attention_mask` {prompt_attention_mask.shape} != `negative_prompt_attention_mask`"
-                    f" {negative_prompt_attention_mask.shape}."
-                )
-
-    # Copied from diffusers.pipelines.sana.pipeline_sana.SanaPipeline._text_preprocessing
+     # Copied from diffusers.pipelines.sana.pipeline_sana.SanaPipeline._text_preprocessing
     def _text_preprocessing(self, text, clean_caption=False):
         if clean_caption and not is_bs4_available():
             logger.warning(BACKENDS_MAPPING["bs4"][-1].format("Setting `clean_caption=True`"))
@@ -671,9 +555,11 @@ class Sana_Pipeline_DoE(DiffusionPipeline, PAGMixin):
         prompt_attention_mask: Optional[torch.Tensor] = None,
         negative_prompt_embeds: Optional[torch.Tensor] = None,
         negative_prompt_attention_mask: Optional[torch.Tensor] = None,
+        nul_prompt_embeds: Optional[torch.Tensor] = None,
+        nul_prompt_attention_mask: Optional[torch.Tensor] = None,
         output_type: Optional[str] = "pil",
         return_dict: bool = True,
-        clean_caption: bool = True,
+        clean_caption: bool = False,
         use_resolution_binning: bool = True,
         callback_on_step_end: Optional[Callable[[int, int, Dict], None]] = None,
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
@@ -688,6 +574,9 @@ class Sana_Pipeline_DoE(DiffusionPipeline, PAGMixin):
             "Please generate only the enhanced description for the prompt below and avoid including any additional commentary or evaluations:",
             "User Prompt: ",
         ],
+        
+        do_bias_CFG: bool = False,
+        
         pag_scale: float = 3.0,
         pag_adaptive_scale: float = 0.0,
         
@@ -809,52 +698,54 @@ class Sana_Pipeline_DoE(DiffusionPipeline, PAGMixin):
 
         doDiffDiff = True if (image and mask_image) else False
 
-        self.check_inputs(
-            prompt,
-            height,
-            width,
-            callback_on_step_end_tensor_inputs,
-            negative_prompt,
-            prompt_embeds,
-            negative_prompt_embeds,
-            prompt_attention_mask,
-            negative_prompt_attention_mask,
-        )
-
         self._pag_scale = pag_scale
         self._pag_adaptive_scale = pag_adaptive_scale
         self._guidance_scale = guidance_scale
         self._interrupt = False
 
         # 2. Default height and width to transformer
-        if prompt is not None and isinstance(prompt, str):
-            batch_size = 1
-        elif prompt is not None and isinstance(prompt, list):
-            batch_size = len(prompt)
-        else:
-            batch_size = prompt_embeds.shape[0]
+        batch_size = prompt_embeds.shape[0]
 
         device = self._execution_device
 
-        # 3. Encode input prompt
         (
             prompt_embeds,
             prompt_attention_mask,
-            negative_prompt_embeds,
-            negative_prompt_attention_mask,
         ) = self.encode_prompt(
-            prompt,
-            self.do_classifier_free_guidance,
-            negative_prompt=negative_prompt,
+            None,
             num_images_per_prompt=num_images_per_prompt,
             device=device,
             prompt_embeds=prompt_embeds,
-            negative_prompt_embeds=negative_prompt_embeds,
             prompt_attention_mask=prompt_attention_mask,
-            negative_prompt_attention_mask=negative_prompt_attention_mask,
             clean_caption=clean_caption,
             max_sequence_length=max_sequence_length,
             complex_human_instruction=complex_human_instruction,
+        )
+        (
+            negative_prompt_embeds,
+            negative_prompt_attention_mask,
+        ) = self.encode_prompt(
+            None,
+            num_images_per_prompt=num_images_per_prompt,
+            device=device,
+            prompt_embeds=negative_prompt_embeds,
+            prompt_attention_mask=negative_prompt_attention_mask,
+            clean_caption=clean_caption,
+            max_sequence_length=max_sequence_length,
+            complex_human_instruction=None,
+        )
+        (
+            nul_prompt_embeds,
+            nul_prompt_attention_mask,
+        ) = self.encode_prompt(
+            None,
+            num_images_per_prompt=num_images_per_prompt,
+            device=device,
+            prompt_embeds=nul_prompt_embeds,
+            prompt_attention_mask=nul_prompt_attention_mask,
+            clean_caption=clean_caption,
+            max_sequence_length=max_sequence_length,
+            complex_human_instruction=None,
         )
 
         if self.do_perturbed_attention_guidance:
@@ -864,9 +755,13 @@ class Sana_Pipeline_DoE(DiffusionPipeline, PAGMixin):
             prompt_attention_mask = self._prepare_perturbed_attention_guidance(
                 prompt_attention_mask, negative_prompt_attention_mask, self.do_classifier_free_guidance
             )
+        elif do_bias_CFG:
+            prompt_embeds = torch.cat([nul_prompt_embeds, negative_prompt_embeds, prompt_embeds], dim=0)
+            prompt_attention_mask = torch.cat([nul_prompt_attention_mask, negative_prompt_attention_mask, prompt_attention_mask], dim=0)
         elif self.do_classifier_free_guidance:
             prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
             prompt_attention_mask = torch.cat([negative_prompt_attention_mask, prompt_attention_mask], dim=0)
+
 
         # 4. Prepare timesteps
         timesteps, num_inference_steps = retrieve_timesteps(
@@ -958,6 +853,13 @@ class Sana_Pipeline_DoE(DiffusionPipeline, PAGMixin):
                     noise_pred = self._apply_perturbed_attention_guidance(
                         noise_pred, self.do_classifier_free_guidance, guidance_scale, t
                     )
+                elif do_bias_CFG:
+                    noise_pred_nul, noise_pred_uncond, noise_pred_text = noise_pred.chunk(3)
+                    noise_pred = noise_pred_nul + guidance_scale * (noise_pred_text - noise_pred_uncond)
+                    
+                    if guidance_rescale > 0.0:
+                        # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
+                        noise_pred = rescale_noise_cfg(noise_pred, noise_pred_text, guidance_rescale=guidance_rescale)
                 elif self.do_classifier_free_guidance:
                     noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                     noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
