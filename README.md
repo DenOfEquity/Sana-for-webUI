@@ -16,7 +16,7 @@ diffusers>=0.32.0
 ```
 
 ---
-### downloads models on demand - minimum will be ~15GB ###
+### downloads models on demand - minimum will be ~9GB ###
 
 ---
 >[!NOTE]
@@ -31,27 +31,30 @@ diffusers>=0.32.0
 <details>
 <summary>Change log</summary>
 
+#### 17/01/2025 ####
+* add option for alternative CFG calculation. '0' button toggle, +50% inference time, PAG takes priority.
+
 #### 11/01/2025 ####
-* add 4K model (unlikely to work until diffusers adds VAE tiling)
-* changes to model loading so VAE only downloaded once regardless of how many models are used
-* and should not download the fp32 transformer models anymore (not sure why pipeline.from_pretrained() loading ignored the variant specified, but loading the transformer separately avoids the issue)
+* add 4K model (unlikely to work until diffusers adds VAE tiling);
+* changes to model loading so VAE only downloaded once regardless of how many models are used;
+* and should not download the fp32 transformer models anymore (not sure why pipeline.from_pretrained() loading ignored the variant specified, but loading the transformer separately avoids the issue).
 
 #### 01/01/2025 ####
-* add initial sampler selection, not sure how many will work yet. *Euler* and *Heun* need more steps than *DPM++ 2M*.
-* add rescale CFG, can be very effective
+* add initial sampler selection, not sure how many will work yet. *Euler* and *Heun* need more steps than *DPM++ 2M*;
+* add rescale CFG, can be *very* effective.
 
 #### 26/12/2024 ####
-* fixes for gallery, sending to i2i
+* fixes for gallery, sending to i2i.
 
 #### 25/12/2024 (2) ####
-* add complex human instruction toggle (CHI button), for automatic prompt enhancement.
-* avoid unnecessary text encoder load if prompt hasn't changed
+* add complex human instruction toggle (CHI button), for automatic prompt enhancement;
+* avoid unnecessary text encoder load if prompt hasn't changed.
 
 #### 25/12/2024 ####
 * add control of shift parameter. From initial tests doesn't seem as useful as with Flux or SD3.
 
 #### 24/12/2024 (2) ####
-* added PAG and some sort of i2i
+* added PAG and some sort of i2i.
 
 #### 24/12/2024 ####
 * first implemention. 2K models need ~16GB VRAM for VAE.
