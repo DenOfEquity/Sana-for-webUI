@@ -29,7 +29,6 @@ class SanaStorage:
 
     locked = False     #   for preventing changes to the following volatile state while generating
     noUnload = False
-    karras = False
     CHI = False
     biasCFG = False
     resolutionBin = True
@@ -82,7 +81,6 @@ import scripts.sana_pipeline as pipeline
 
 # modules/processing.py - don't use ',', '\n', ':' in values
 def create_infotext(model, sampler, positive_prompt, negative_prompt, guidance_scale, guidance_rescale, steps, seed, width, height, PAG_scale, PAG_adapt, shift):
-#    karras = " : Karras" if SanaStorage.karras == True else ""
     CHI = ", CHI: enabled" if SanaStorage.CHI == True else ""
     bCFG = ", biasCorrectionCFG: enabled" if SanaStorage.biasCFG == True else ""
     generation_params = {
@@ -264,19 +262,23 @@ def predict(positive_prompt, negative_prompt, model, sampler, width, height, gui
             SanaStorage.pipeTR.vae.enable_tiling()
     ####    end setup pipe for transformer + VAE
 
-
-    ####    shift
-    SanaStorage.pipeTR.scheduler.config.flow_shift = shift
+    ####    shift, possibly other scheduler options, different sigmas?
+    #flow, karras, exponential, beta
+    schedulerConfig = dict(SanaStorage.pipeTR.scheduler.config)
+    schedulerConfig['flow_shift'] = shift
 
     if sampler == "Euler":
-        scheduler = FlowMatchEulerDiscreteScheduler.from_config(SanaStorage.pipeTR.scheduler.config)
+        schedulerConfig.pop('algorithm_type', None) 
+        scheduler = FlowMatchEulerDiscreteScheduler.from_config(schedulerConfig)
     elif sampler == "Heun":
-        scheduler = FlowMatchHeunDiscreteScheduler.from_config(SanaStorage.pipeTR.scheduler.config)
-    elif sampler == "DPM++ 2M":
-        scheduler = DPMSolverMultistepScheduler.from_config(SanaStorage.pipeTR.scheduler.config)
+        schedulerConfig.pop('algorithm_type', None) 
+        scheduler = FlowMatchHeunDiscreteScheduler.from_config(schedulerConfig)
     else:
-        scheduler = DPMSolverMultistepScheduler.from_config(SanaStorage.pipeTR.scheduler.config)
+        scheduler = DPMSolverMultistepScheduler.from_config(schedulerConfig)
+
+
     SanaStorage.pipeTR.scheduler = scheduler
+
 
     # gc.collect()
     # torch.cuda.empty_cache()
@@ -444,7 +446,7 @@ def predict(positive_prompt, negative_prompt, model, sampler, width, height, gui
         image = SanaStorage.pipeTR.image_processor.postprocess(image, output_type="pil")[0]
 
         info=create_infotext(
-            model, sampler, 
+            model, sampler,
             positive_prompt, negative_prompt,
             guidance_scale, guidance_rescale, 
             num_steps, 
@@ -610,12 +612,6 @@ def on_ui_tabs():
             torch.cuda.empty_cache()
         else:
             gradio.Info('Unable to unload models while using them.')
-
-    def toggleKarras ():
-        if not SanaStorage.locked:
-            SanaStorage.karras ^= True
-        return gradio.Button.update(variant='primary' if SanaStorage.karras == True else 'secondary',
-                                value='\U0001D40A' if SanaStorage.karras == True else '\U0001D542')
 
     def toggleCHI ():
         if not SanaStorage.locked:
@@ -829,18 +825,18 @@ def on_ui_tabs():
                 with gradio.Row():
                     access = ToolButton(value='\U0001F917', variant='secondary', visible=False)
                     model = gradio.Dropdown(models_list, label='Model', value=defaultModel, type='value', scale=2)
-                    karras = ToolButton(value="\U0001D542", variant='secondary', tooltip="use Karras sigmas", visible=False)
                     CHI = ToolButton(value="CHI", variant='secondary', tooltip="use complex human instruction")
+                    SP = ToolButton(value='ꌗ', variant='secondary', tooltip='prompt enhancement')
+                    parse = ToolButton(value="↙️", variant='secondary', tooltip="parse")
                     sampler = gradio.Dropdown(["DPM++ 2M", "Euler", "Heun"], label='Sampler', value="DPM++ 2M", type='value', scale=0)
 
                 with gradio.Row():
-                    positive_prompt = gradio.Textbox(label='Prompt', placeholder='Enter a prompt here...', lines=2, show_label=False)
-                    parse = ToolButton(value="↙️", variant='secondary', tooltip="parse")
-                    SP = ToolButton(value='ꌗ', variant='secondary', tooltip='prompt enhancement')
+                    positive_prompt = gradio.Textbox(label='Prompt', placeholder='Enter a prompt here...', lines=2)
+                    style = gradio.Dropdown([x[0] for x in styles.styles_list], label='Style', value="(None)", type='index', scale=0)
 
                 with gradio.Row():
-                    negative_prompt = gradio.Textbox(label='Negative', placeholder='Negative prompt', lines=1.01, show_label=False)
-                    style = gradio.Dropdown([x[0] for x in styles.styles_list], label='Style', value="[style] (None)", type='index', scale=0, show_label=False)
+                    negative_prompt = gradio.Textbox(label='Negative', lines=1)
+                    batch_size = gradio.Number(label='Batch Size', minimum=1, maximum=9, value=1, precision=0, scale=0)
                 with gradio.Row():
                     width = gradio.Slider(label='Width', minimum=128, maximum=4096, step=32, value=defaultWidth)
                     swapper = ToolButton(value="\U000021C4")
@@ -850,19 +846,18 @@ def on_ui_tabs():
                                         label='Quickset', type='value', scale=0)
 
                 with gradio.Row():
-                    guidance_scale = gradio.Slider(label='CFG', minimum=1, maximum=16, step=0.1, value=4.0, scale=1, visible=True)
+                    guidance_scale = gradio.Slider(label='CFG', minimum=1, maximum=16, step=0.1, value=4.0, scale=1)
                     CFGrescale = gradio.Slider(label='rescale CFG', minimum=0.00, maximum=1.0, step=0.01, value=0.0, scale=1)
                     bCFG = ToolButton(value="0", variant='secondary', tooltip="use bias CFG correction")
-                    shift = gradio.Slider(label='Shift', minimum=1, maximum=8.0, step=0.01, value=3.0, scale=0)
+                    shift = gradio.Slider(label='Shift', minimum=1, maximum=12.0, step=0.01, value=3.0, scale=0)
                 with gradio.Row():
-                    PAG_scale = gradio.Slider(label='Perturbed-Attention Guidance scale', minimum=0, maximum=8, step=0.1, value=0.0, scale=1, visible=True)
+                    PAG_scale = gradio.Slider(label='Perturbed-Attention Guidance scale', minimum=0, maximum=8, step=0.1, value=0.0, scale=1)
                     PAG_adapt = gradio.Slider(label='PAG adaptive scale', minimum=0.00, maximum=0.1, step=0.001, value=0.0, scale=1)
                 with gradio.Row():
                     steps = gradio.Slider(label='Steps', minimum=1, maximum=60, step=1, value=11, scale=1, visible=True)
                     sampling_seed = gradio.Number(label='Seed', value=-1, precision=0, scale=1)
                     random = ToolButton(value="\U0001f3b2\ufe0f")
                     reuseSeed = ToolButton(value="\u267b\ufe0f")
-                    batch_size = gradio.Number(label='Batch Size', minimum=1, maximum=9, value=1, precision=0, scale=0)
 
                 with gradio.Row(equal_height=True):
                     lora = gradio.Dropdown([x for x in loras], label='LoRA (place in models/diffusers/SanaLora)', value="(None)", type='value', multiselect=False, scale=2)
@@ -959,7 +954,6 @@ def on_ui_tabs():
         dims.input(updateWH, inputs=[dims, width, height], outputs=[dims, width, height], show_progress=False)
         parse.click(parsePrompt, inputs=parseCtrls, outputs=parseCtrls, show_progress=False)
         access.click(toggleAccess, inputs=[], outputs=access)
-        karras.click(toggleKarras, inputs=[], outputs=karras)
         CHI.click(toggleCHI, inputs=[], outputs=CHI)
         bCFG.click(toggleBiasCFG, inputs=[], outputs=bCFG)
         resBin.click(toggleResBin, inputs=[], outputs=resBin)
