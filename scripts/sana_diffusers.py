@@ -165,9 +165,6 @@ def predict(positive_prompt, negative_prompt, model, sampler, width, height, gui
     fixed_seed = get_fixed_seed(-1 if SanaStorage.randomSeed else sampling_seed)
 
     ####    text encoding
-    if negative_prompt == "":
-        negative_prompt = "."
-
     calcEmbeds = (SanaStorage.lastPrompt   != positive_prompt) or \
                  (SanaStorage.lastNegative != negative_prompt) or \
                  (SanaStorage.pos_embeds is None) or \
@@ -208,7 +205,7 @@ def predict(positive_prompt, negative_prompt, model, sampler, width, height, gui
 
         if SanaStorage.nul_embeds is None:
             nul_embeds, nul_attention = SanaStorage.pipeTE.encode_prompt(
-                ".",    # empty is bad ?
+                "",
             )
             SanaStorage.nul_embeds    = nul_embeds.to('cuda')
             SanaStorage.nul_attention = nul_attention.to('cuda')
@@ -393,7 +390,7 @@ def predict(positive_prompt, negative_prompt, model, sampler, width, height, gui
             num_images_per_prompt           = num_images,
             height                          = height,
             width                           = width,
-            guidance_scale                  = 1.0 if negative_prompt == "" else guidance_scale,
+            guidance_scale                  = guidance_scale,
             guidance_rescale                = guidance_rescale,
             prompt_embeds                   = SanaStorage.pos_embeds,
             negative_prompt_embeds          = SanaStorage.neg_embeds,
@@ -403,7 +400,7 @@ def predict(positive_prompt, negative_prompt, model, sampler, width, height, gui
             nul_prompt_attention_mask       = SanaStorage.nul_attention,
             use_resolution_binning          = SanaStorage.resolutionBin,
             
-            do_bias_CFG                     = False if negative_prompt == "" else SanaStorage.biasCFG,
+            do_bias_CFG                     = SanaStorage.biasCFG,
 
             pag_scale                       = PAG_scale,
             pag_adaptive_scale              = PAG_adapt,

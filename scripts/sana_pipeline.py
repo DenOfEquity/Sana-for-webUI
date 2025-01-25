@@ -236,7 +236,6 @@ class Sana_Pipeline_DoE(DiffusionPipeline, PAGMixin):
     def encode_prompt(
         self,
         prompt: Union[str, List[str]],
-        is_positive: bool = False,
         num_images_per_prompt: int = 1,
         device: Optional[torch.device] = None,
         prompt_embeds: Optional[torch.Tensor] = None,
@@ -728,7 +727,7 @@ class Sana_Pipeline_DoE(DiffusionPipeline, PAGMixin):
             prompt_attention_mask = self._prepare_perturbed_attention_guidance(
                 prompt_attention_mask, negative_prompt_attention_mask, self.do_classifier_free_guidance
             )
-        elif do_bias_CFG:
+        elif do_bias_CFG:   # should this be CFG > 1.0 only?
             prompt_embeds = torch.cat([nul_prompt_embeds, negative_prompt_embeds, prompt_embeds], dim=0)
             prompt_attention_mask = torch.cat([nul_prompt_attention_mask, negative_prompt_attention_mask, prompt_attention_mask], dim=0)
         elif self.do_classifier_free_guidance:
