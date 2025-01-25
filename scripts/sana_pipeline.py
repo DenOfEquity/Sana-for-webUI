@@ -236,13 +236,13 @@ class Sana_Pipeline_DoE(DiffusionPipeline, PAGMixin):
     def encode_prompt(
         self,
         prompt: Union[str, List[str]],
+        is_positive: bool = False,
         num_images_per_prompt: int = 1,
         device: Optional[torch.device] = None,
         prompt_embeds: Optional[torch.Tensor] = None,
         prompt_attention_mask: Optional[torch.Tensor] = None,
         clean_caption: bool = False,
         max_sequence_length: int = 300,
-        complex_human_instruction: Optional[List[str]] = None,
     ):
         r"""
         Encodes the prompt into text encoder hidden states.
@@ -260,9 +260,6 @@ class Sana_Pipeline_DoE(DiffusionPipeline, PAGMixin):
             clean_caption (`bool`, defaults to `False`):
                 If `True`, the function will preprocess and clean the provided caption before encoding.
             max_sequence_length (`int`, defaults to 300): Maximum sequence length to use for the prompt.
-            complex_human_instruction (`list[str]`, defaults to `complex_human_instruction`):
-                If `complex_human_instruction` is not empty, the function will use the complex Human instruction for
-                the prompt.
         """
 
         if device is None:
@@ -285,19 +282,10 @@ class Sana_Pipeline_DoE(DiffusionPipeline, PAGMixin):
         if prompt_embeds is None:
             prompt = self._text_preprocessing(prompt, clean_caption=clean_caption)
 
-            # prepare complex human instruction
-            if not complex_human_instruction:
-                max_length_all = max_length
-            else:
-                chi_prompt = "\n".join(complex_human_instruction)
-                prompt = [chi_prompt + p for p in prompt]
-                num_chi_prompt_tokens = len(self.tokenizer.encode(chi_prompt))
-                max_length_all = num_chi_prompt_tokens + max_length - 2
-
             text_inputs = self.tokenizer(
                 prompt,
                 padding="max_length",
-                max_length=max_length_all,
+                max_length=max_length,
                 truncation=True,
                 add_special_tokens=True,
                 return_tensors="pt",
@@ -310,6 +298,7 @@ class Sana_Pipeline_DoE(DiffusionPipeline, PAGMixin):
             prompt_embeds = self.text_encoder(text_input_ids.to(device), attention_mask=prompt_attention_mask)
             prompt_embeds = prompt_embeds[0][:, select_index]
             prompt_attention_mask = prompt_attention_mask[:, select_index]
+
 
         if self.transformer is not None:
             dtype = self.transformer.dtype
@@ -564,16 +553,6 @@ class Sana_Pipeline_DoE(DiffusionPipeline, PAGMixin):
         callback_on_step_end: Optional[Callable[[int, int, Dict], None]] = None,
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
         max_sequence_length: int = 300,
-        complex_human_instruction: List[str] = [
-            "Given a user prompt, generate an 'Enhanced prompt' that provides detailed visual descriptions suitable for image generation. Evaluate the level of detail in the user prompt:",
-            "- If the prompt is simple, focus on adding specifics about colors, shapes, sizes, textures, and spatial relationships to create vivid and concrete scenes.",
-            "- If the prompt is already detailed, refine and enhance the existing details slightly without overcomplicating.",
-            "Here are examples of how to transform or refine prompts:",
-            "- User Prompt: A cat sleeping -> Enhanced: A small, fluffy white cat curled up in a round shape, sleeping peacefully on a warm sunny windowsill, surrounded by pots of blooming red flowers.",
-            "- User Prompt: A busy city street -> Enhanced: A bustling city street scene at dusk, featuring glowing street lamps, a diverse crowd of people in colorful clothing, and a double-decker bus passing by towering glass skyscrapers.",
-            "Please generate only the enhanced description for the prompt below and avoid including any additional commentary or evaluations:",
-            "User Prompt: ",
-        ],
         
         do_bias_CFG: bool = False,
         
@@ -661,9 +640,6 @@ class Sana_Pipeline_DoE(DiffusionPipeline, PAGMixin):
                 will be passed as `callback_kwargs` argument. You will only be able to include variables listed in the
                 `._callback_tensor_inputs` attribute of your pipeline class.
             max_sequence_length (`int` defaults to 300): Maximum sequence length to use with the `prompt`.
-            complex_human_instruction (`List[str]`, *optional*):
-                Instructions for complex human attention:
-                https://github.com/NVlabs/Sana/blob/main/configs/sana_app_config/Sana_1600M_app.yaml#L55.
             pag_scale (`float`, *optional*, defaults to 3.0):
                 The scale factor for the perturbed attention guidance. If it is set to 0.0, the perturbed attention
                 guidance will not be used.
@@ -719,7 +695,6 @@ class Sana_Pipeline_DoE(DiffusionPipeline, PAGMixin):
             prompt_attention_mask=prompt_attention_mask,
             clean_caption=clean_caption,
             max_sequence_length=max_sequence_length,
-            complex_human_instruction=complex_human_instruction,
         )
         (
             negative_prompt_embeds,
@@ -732,7 +707,6 @@ class Sana_Pipeline_DoE(DiffusionPipeline, PAGMixin):
             prompt_attention_mask=negative_prompt_attention_mask,
             clean_caption=clean_caption,
             max_sequence_length=max_sequence_length,
-            complex_human_instruction=None,
         )
         (
             nul_prompt_embeds,
@@ -745,7 +719,6 @@ class Sana_Pipeline_DoE(DiffusionPipeline, PAGMixin):
             prompt_attention_mask=nul_prompt_attention_mask,
             clean_caption=clean_caption,
             max_sequence_length=max_sequence_length,
-            complex_human_instruction=None,
         )
 
         if self.do_perturbed_attention_guidance:

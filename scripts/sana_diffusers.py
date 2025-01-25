@@ -13,7 +13,6 @@ class SanaStorage:
     lora_scale = 1.0
     loadedLora = False
 
-    lastSeed = -1
     lastPrompt = None
     lastNegative = None
     pos_embeds = None
@@ -26,10 +25,10 @@ class SanaStorage:
     captionToPrompt = False
     sendAccessToken = False
     doneAccessTokenWarning = False
+    randomSeed = True
 
     locked = False     #   for preventing changes to the following volatile state while generating
     noUnload = False
-    CHI = False
     biasCFG = False
     resolutionBin = True
     sharpNoise = False
@@ -65,7 +64,7 @@ from diffusers.pipelines.pixart_alpha.pipeline_pixart_alpha import (
 from diffusers.pipelines.pixart_alpha.pipeline_pixart_sigma import ASPECT_RATIO_2048_BIN
 from scripts.sana_pipeline import ASPECT_RATIO_4096_BIN
 
-from diffusers import DPMSolverMultistepScheduler, FlowMatchEulerDiscreteScheduler, FlowMatchHeunDiscreteScheduler
+from diffusers import DPMSolverMultistepScheduler, FlowMatchEulerDiscreteScheduler, FlowMatchHeunDiscreteScheduler#, SASolverScheduler
 from diffusers.utils.torch_utils import randn_tensor
 from diffusers.utils import logging
 
@@ -81,7 +80,6 @@ import scripts.sana_pipeline as pipeline
 
 # modules/processing.py - don't use ',', '\n', ':' in values
 def create_infotext(model, sampler, positive_prompt, negative_prompt, guidance_scale, guidance_rescale, steps, seed, width, height, PAG_scale, PAG_adapt, shift):
-    CHI = ", CHI: enabled" if SanaStorage.CHI == True else ""
     bCFG = ", biasCorrectionCFG: enabled" if SanaStorage.biasCFG == True else ""
     generation_params = {
         "Steps": steps,
@@ -100,7 +98,7 @@ def create_infotext(model, sampler, positive_prompt, negative_prompt, guidance_s
     generation_params_text = ", ".join([k if k == v else f'{k}: {v}' for k, v in generation_params.items() if v is not None])
     noise_text = f", Initial noise: {SanaStorage.noiseRGBA}" if SanaStorage.noiseRGBA[3] != 0.0 else ""
 
-    return f"{prompt_text}{generation_params_text}{noise_text}{CHI}{bCFG}, Model (Sana): {model}"
+    return f"{prompt_text}{generation_params_text}{noise_text}{bCFG}, Model (Sana): {model}"
 
 def predict(positive_prompt, negative_prompt, model, sampler, width, height, guidance_scale, guidance_rescale, num_steps, sampling_seed, num_images, i2iSource, i2iDenoise, style, PAG_scale, PAG_adapt, maskType, maskSource, maskBlur, maskCutOff, shift, *args):
  
@@ -164,18 +162,18 @@ def predict(positive_prompt, negative_prompt, model, sampler, width, height, gui
         height = (height // 32) * 32
     ####    end enforce safe generation size
 
-
-    gc.collect()
-    torch.cuda.empty_cache()
-
-    fixed_seed = get_fixed_seed(sampling_seed)
-    SanaStorage.lastSeed = fixed_seed
+    fixed_seed = get_fixed_seed(-1 if SanaStorage.randomSeed else sampling_seed)
 
     ####    text encoding
-    useCachedEmbeds = (SanaStorage.lastPrompt == positive_prompt and SanaStorage.lastNegative == negative_prompt)
-    if useCachedEmbeds:
-        print ("Sana: Skipping tokenizer, text_encoder.")
-    else:
+    if negative_prompt == "":
+        negative_prompt = "."
+
+    calcEmbeds = (SanaStorage.lastPrompt   != positive_prompt) or \
+                 (SanaStorage.lastNegative != negative_prompt) or \
+                 (SanaStorage.pos_embeds is None) or \
+                 (SanaStorage.neg_embeds is None) or \
+                 (SanaStorage.nul_embeds is None)
+    if calcEmbeds:
         ####    setup pipe for text encoding
         if SanaStorage.pipeTE == None:
             SanaStorage.pipeTE = pipeline.Sana_Pipeline_DoE.from_pretrained(
@@ -188,60 +186,56 @@ def predict(positive_prompt, negative_prompt, model, sampler, width, height, gui
             )
 
         SanaStorage.pipeTE.to('cuda')
-        SanaStorage.lastPrompt = positive_prompt
-        SanaStorage.lastNegative = negative_prompt
-
-        CHI = [
-                "Given a user prompt, generate an 'Enhanced prompt' that provides detailed visual descriptions suitable for image generation. Evaluate the level of detail in the user prompt:",
-                "- If the prompt is simple, focus on adding specifics about colors, shapes, sizes, textures, and spatial relationships to create vivid and concrete scenes.",
-                "- If the prompt is already detailed, refine and enhance the existing details slightly without overcomplicating.",
-                "Here are examples of how to transform or refine prompts:",
-                "- User Prompt: A cat sleeping -> Enhanced: A small, fluffy white cat curled up in a round shape, sleeping peacefully on a warm sunny windowsill, surrounded by pots of blooming red flowers.",
-                "- User Prompt: A busy city street -> Enhanced: A bustling city street scene at dusk, featuring glowing street lamps, a diverse crowd of people in colorful clothing, and a double-decker bus passing by towering glass skyscrapers.",
-                "Please generate only the enhanced description for the prompt below and avoid including any additional commentary or evaluations:",
-                "User Prompt: ",
-            ]
 
         print ("Sana: encoding prompt ...", end="\r", flush=True)
-        pos_embeds, pos_attention = SanaStorage.pipeTE.encode_prompt(
-            positive_prompt,
-            complex_human_instruction   = None if not SanaStorage.CHI else CHI
-        )
-        SanaStorage.pos_embeds    = pos_embeds.to('cuda').to(dtype)
-        SanaStorage.pos_attention = pos_attention.to('cuda').to(dtype)
-        del pos_embeds, pos_attention
+        if SanaStorage.lastPrompt != positive_prompt or SanaStorage.pos_embeds is None:
+            pos_embeds, pos_attention = SanaStorage.pipeTE.encode_prompt(
+                positive_prompt,
+            )
+            SanaStorage.pos_embeds    = pos_embeds.to('cuda')
+            SanaStorage.pos_attention = pos_attention.to('cuda')
+            del pos_embeds, pos_attention
+            SanaStorage.lastPrompt = positive_prompt
 
-        neg_embeds, neg_attention = SanaStorage.pipeTE.encode_prompt(
-            negative_prompt,
-            complex_human_instruction   = None
-        )
-        SanaStorage.neg_embeds    = neg_embeds.to('cuda').to(dtype)
-        SanaStorage.neg_attention = neg_attention.to('cuda').to(dtype)
-        del neg_embeds, neg_attention
+        if SanaStorage.lastNegative != negative_prompt or SanaStorage.neg_embeds is None:
+            neg_embeds, neg_attention = SanaStorage.pipeTE.encode_prompt(
+                negative_prompt,
+            )
+            SanaStorage.neg_embeds    = neg_embeds.to('cuda')
+            SanaStorage.neg_attention = neg_attention.to('cuda')
+            del neg_embeds, neg_attention
+            SanaStorage.lastNegative = negative_prompt
 
         if SanaStorage.nul_embeds is None:
             nul_embeds, nul_attention = SanaStorage.pipeTE.encode_prompt(
-                "",
-                complex_human_instruction   = None
+                ".",    # empty is bad ?
             )
-            SanaStorage.nul_embeds    = nul_embeds.to('cuda').to(dtype)
-            SanaStorage.nul_attention = nul_attention.to('cuda').to(dtype)
+            SanaStorage.nul_embeds    = nul_embeds.to('cuda')
+            SanaStorage.nul_attention = nul_attention.to('cuda')
             del nul_embeds, nul_attention
+
         print ("Sana: encoding prompt ... done")
+    else:
+        print ("Sana: Skipping tokenizer, text_encoder.")
 
-
-        if SanaStorage.noUnload:
+    if SanaStorage.noUnload:
+        if SanaStorage.pipeTE is not None:
             SanaStorage.pipeTE.to('cpu')
-        else:
-            SanaStorage.pipeTE = None
+    else:
+        SanaStorage.pipeTE = None
+        gc.collect()
+        torch.cuda.empty_cache()
     ####    end text encoding
 
-    if SanaStorage.lastModel != model:
-        SanaStorage.pipeTR = None
 
 
     ####    setup pipe for transformer + VAE
-    ### #   shared VAE, save ~1.16GB per model (after 1600M_1024px)
+    ### #   shared VAE, save ~1.16GB per model (after 1600M_1024px) - they are identical for fp16 and bf16 models
+    if SanaStorage.lastModel != model:
+        SanaStorage.pipeTR = None
+        gc.collect()
+        torch.cuda.empty_cache()
+
     if SanaStorage.pipeTR == None:
         from diffusers.models import AutoencoderDC, SanaTransformer2DModel
 
@@ -273,15 +267,13 @@ def predict(positive_prompt, negative_prompt, model, sampler, width, height, gui
     elif sampler == "Heun":
         schedulerConfig.pop('algorithm_type', None) 
         scheduler = FlowMatchHeunDiscreteScheduler.from_config(schedulerConfig)
+    # elif sampler == "SA-solver":
+        # schedulerConfig['algorithm_type'] = 'data_prediction'
+        # scheduler = SASolverScheduler.from_config(schedulerConfig)
     else:
         scheduler = DPMSolverMultistepScheduler.from_config(schedulerConfig)
 
-
     SanaStorage.pipeTR.scheduler = scheduler
-
-
-    # gc.collect()
-    # torch.cuda.empty_cache()
 
 #   load in LoRA
     if SanaStorage.lora and SanaStorage.lora != "(None)" and SanaStorage.lora_scale != 0.0:
@@ -479,8 +471,7 @@ def predict(positive_prompt, negative_prompt, model, sampler, width, height, gui
     gc.collect()
     torch.cuda.empty_cache()
 
-    SanaStorage.locked = False
-    return gradio.Button.update(value='Generate', variant='primary', interactive=True), gradio.Button.update(interactive=True), results
+    return fixed_seed, gradio.Button.update(interactive=True), results
 
 
 def on_ui_tabs():
@@ -512,13 +503,15 @@ def on_ui_tabs():
         return gradio.Dropdown.update(choices=loras)
  
     def getGalleryIndex (index):
+        if index < 0:
+            index = 0
         return index
 
-    def getGalleryText (gallery, index):
-        return gallery[index][1]
+    def getGalleryText (gallery, index, seed):
+        return gallery[index][1], seed+index
 
-    def reuseLastSeed (index):
-        return SanaStorage.lastSeed + index
+    # def reuseLastSeed (index):
+        # return SanaStorage.lastSeed + index
         
     def i2iSetDimensions (image, w, h):
         if image is not None:
@@ -603,6 +596,7 @@ def on_ui_tabs():
 
     def unloadM ():
         if not SanaStorage.locked:
+            SanaStorage.pipeTE = None
             SanaStorage.pipeTR = None
             SanaStorage.lastModel = None
             shared.SuperPrompt_tokenizer = None
@@ -613,11 +607,9 @@ def on_ui_tabs():
         else:
             gradio.Info('Unable to unload models while using them.')
 
-    def toggleCHI ():
-        if not SanaStorage.locked:
-            SanaStorage.CHI ^= True
-            SanaStorage.lastPrompt = None
-        return gradio.Button.update(variant='primary' if SanaStorage.CHI == True else 'secondary')
+    def toggleRandom ():
+        SanaStorage.randomSeed ^= True
+        return gradio.Button.update(variant='primary' if SanaStorage.randomSeed == True else 'secondary')
 
     def toggleBiasCFG ():
         if not SanaStorage.locked:
@@ -677,6 +669,10 @@ def on_ui_tabs():
         SanaStorage.lora_scale = scale# if lora != "(None)" else 1.0
         SanaStorage.locked = True
         return gradio.Button.update(value='...', variant='secondary', interactive=False), gradio.Button.update(interactive=False)
+
+    def afterGenerate ():
+        SanaStorage.locked = False
+        return gradio.Button.update(value='Generate', variant='primary', interactive=True)
 
     schedulerList = ["default", "DDPM", "DEIS", "DPM++ 2M", "DPM++ 2M SDE", "DPM", "DPM SDE",
                      "Euler", "Euler A", "LCM", "SA-solver", "UniPC", ]
@@ -825,7 +821,6 @@ def on_ui_tabs():
                 with gradio.Row():
                     access = ToolButton(value='\U0001F917', variant='secondary', visible=False)
                     model = gradio.Dropdown(models_list, label='Model', value=defaultModel, type='value', scale=2)
-                    CHI = ToolButton(value="CHI", variant='secondary', tooltip="use complex human instruction")
                     SP = ToolButton(value='ꌗ', variant='secondary', tooltip='prompt enhancement')
                     parse = ToolButton(value="↙️", variant='secondary', tooltip="parse")
                     sampler = gradio.Dropdown(["DPM++ 2M", "Euler", "Heun"], label='Sampler', value="DPM++ 2M", type='value', scale=0)
@@ -835,7 +830,7 @@ def on_ui_tabs():
                     style = gradio.Dropdown([x[0] for x in styles.styles_list], label='Style', value="(None)", type='index', scale=0)
 
                 with gradio.Row():
-                    negative_prompt = gradio.Textbox(label='Negative', lines=1)
+                    negative_prompt = gradio.Textbox(label='Negative', lines=1, value="")
                     batch_size = gradio.Number(label='Batch Size', minimum=1, maximum=9, value=1, precision=0, scale=0)
                 with gradio.Row():
                     width = gradio.Slider(label='Width', minimum=128, maximum=4096, step=32, value=defaultWidth)
@@ -855,12 +850,12 @@ def on_ui_tabs():
                     PAG_adapt = gradio.Slider(label='PAG adaptive scale', minimum=0.00, maximum=0.1, step=0.001, value=0.0, scale=1)
                 with gradio.Row():
                     steps = gradio.Slider(label='Steps', minimum=1, maximum=60, step=1, value=11, scale=1, visible=True)
-                    sampling_seed = gradio.Number(label='Seed', value=-1, precision=0, scale=1)
-                    random = ToolButton(value="\U0001f3b2\ufe0f")
-                    reuseSeed = ToolButton(value="\u267b\ufe0f")
+                    random = ToolButton(value="\U0001f3b2\ufe0f", variant="primary")
+                    sampling_seed = gradio.Number(label='Seed', value=-1, precision=0, scale=0)
+#                    reuseSeed = ToolButton(value="\u267b\ufe0f")
 
                 with gradio.Row(equal_height=True):
-                    lora = gradio.Dropdown([x for x in loras], label='LoRA (place in models/diffusers/SanaLora)', value="(None)", type='value', multiselect=False, scale=2)
+                    lora = gradio.Dropdown([x for x in loras], label='LoRA (place in models/diffusers/SanaLora)', value="(None)", type='value', multiselect=False, scale=1)
                     refreshL = ToolButton(value='\U0001f504')
                     scale = gradio.Slider(label='LoRA weight', minimum=-1.0, maximum=1.0, value=1.0, step=0.01, scale=1)
 
@@ -913,6 +908,7 @@ def on_ui_tabs():
 #   caption not displaying linebreaks, alt text does
                 gallery_index = gradio.Number(value=0, visible=False)
                 infotext = gradio.Textbox(value="", visible=False)
+                base_seed = gradio.Number(value=0, visible=False)
 
                 with gradio.Row():
                     buttons = parameters_copypaste.create_buttons(["img2img", "inpaint", "extras"])
@@ -954,12 +950,11 @@ def on_ui_tabs():
         dims.input(updateWH, inputs=[dims, width, height], outputs=[dims, width, height], show_progress=False)
         parse.click(parsePrompt, inputs=parseCtrls, outputs=parseCtrls, show_progress=False)
         access.click(toggleAccess, inputs=[], outputs=access)
-        CHI.click(toggleCHI, inputs=[], outputs=CHI)
         bCFG.click(toggleBiasCFG, inputs=[], outputs=bCFG)
         resBin.click(toggleResBin, inputs=[], outputs=resBin)
         swapper.click(lambda w, h: (h, w), inputs=[width, height], outputs=[width, height], show_progress=False)
-        random.click(lambda : -1, inputs=[], outputs=sampling_seed, show_progress=False)
-        reuseSeed.click(reuseLastSeed, inputs=gallery_index, outputs=sampling_seed, show_progress=False)
+        random.click(toggleRandom, inputs=[], outputs=random, show_progress=False)
+#        reuseSeed.click(reuseLastSeed, inputs=gallery_index, outputs=sampling_seed, show_progress=False)
         AS.click(toggleAS, inputs=[], outputs=AS)
         refreshL.click(refreshLoRAs, inputs=[], outputs=[lora])
 
@@ -968,9 +963,9 @@ def on_ui_tabs():
         i2iCaption.click (fn=i2iMakeCaptions, inputs=[i2iSource, positive_prompt], outputs=[positive_prompt])
         toPrompt.click(toggleC2P, inputs=[], outputs=[toPrompt])
 
-        output_gallery.select(fn=getGalleryIndex, js="selected_gallery_index", inputs=gallery_index, outputs=gallery_index).then(fn=getGalleryText, inputs=[output_gallery, gallery_index], outputs=[infotext])
+        output_gallery.select(fn=getGalleryIndex, js="selected_gallery_index", inputs=gallery_index, outputs=gallery_index, show_progress=False).then(fn=getGalleryText, inputs=[output_gallery, gallery_index, base_seed], outputs=[infotext, sampling_seed], show_progress=False)
 
-        generate_button.click(toggleGenerate, inputs=[initialNoiseR, initialNoiseG, initialNoiseB, initialNoiseA, lora, scale], outputs=[generate_button, SP]).then(predict, inputs=ctrls, outputs=[generate_button, SP, output_gallery], show_progress='full').then(fn=lambda: gradio.update(value='Generate', variant='primary', interactive=True), inputs=None, outputs=generate_button).then(fn=getGalleryIndex, js="selected_gallery_index", inputs=gallery_index, outputs=gallery_index).then(fn=getGalleryText, inputs=[output_gallery, gallery_index], outputs=[infotext])
+        generate_button.click(toggleGenerate, inputs=[initialNoiseR, initialNoiseG, initialNoiseB, initialNoiseA, lora, scale], outputs=[generate_button, SP]).then(predict, inputs=ctrls, outputs=[base_seed, SP, output_gallery], show_progress='full').then(fn=afterGenerate, inputs=None, outputs=generate_button).then(fn=getGalleryIndex, js="selected_gallery_index", inputs=gallery_index, outputs=gallery_index, show_progress=False).then(fn=getGalleryText, inputs=[output_gallery, gallery_index, base_seed], outputs=[infotext, sampling_seed], show_progress=False)
 
     return [(sana_block, "Sana", "sana_DoE")]
 
