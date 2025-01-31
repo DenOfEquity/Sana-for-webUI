@@ -19,6 +19,7 @@ import urllib.parse as ul
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import torch
+import gc
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from diffusers.callbacks import MultiPipelineCallbacks, PipelineCallback
@@ -545,7 +546,6 @@ class Sana_Pipeline_DoE(DiffusionPipeline, PAGMixin):
         negative_prompt_attention_mask: Optional[torch.Tensor] = None,
         nul_prompt_embeds: Optional[torch.Tensor] = None,
         nul_prompt_attention_mask: Optional[torch.Tensor] = None,
-        output_type: Optional[str] = "pil",
         return_dict: bool = True,
         clean_caption: bool = False,
         use_resolution_binning: bool = True,
@@ -616,9 +616,6 @@ class Sana_Pipeline_DoE(DiffusionPipeline, PAGMixin):
                 provided, negative_prompt_embeds will be generated from `negative_prompt` input argument.
             negative_prompt_attention_mask (`torch.Tensor`, *optional*):
                 Pre-generated attention mask for negative text embeddings.
-            output_type (`str`, *optional*, defaults to `"pil"`):
-                The output format of the generate image. Choose between
-                [PIL](https://pillow.readthedocs.io/en/stable/): `PIL.Image.Image` or `np.array`.
             return_dict (`bool`, *optional*, defaults to `True`):
                 Whether or not to return a [`~pipelines.stable_diffusion.IFPipelineOutput`] instead of a plain tuple.
             clean_caption (`bool`, *optional*, defaults to `True`):
@@ -765,6 +762,11 @@ class Sana_Pipeline_DoE(DiffusionPipeline, PAGMixin):
             # 4. Prepare timesteps
             timesteps, num_inference_steps = self.get_timesteps(num_inference_steps, strength, device)
 
+            self.transformer.to('cpu')
+            gc.collect()
+            torch.cuda.empty_cache()
+            self.vae.to('cuda')
+
             # 3. Preprocess image
             image = self.image_processor.preprocess(image, height=height, width=width).to('cuda').to(self.vae.dtype)
             image_latents = self.vae.encode(image)[0]
@@ -782,6 +784,10 @@ class Sana_Pipeline_DoE(DiffusionPipeline, PAGMixin):
                 # 5.1. Prepare masked latent variables
                 mask = self.mask_processor.preprocess(mask_image.resize((width//32, height//32))).to(device='cuda')
 
+            self.vae.to('cpu')
+            gc.collect()
+            torch.cuda.empty_cache()
+            self.transformer.to('cuda')
 
         # 6. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
@@ -858,16 +864,7 @@ class Sana_Pipeline_DoE(DiffusionPipeline, PAGMixin):
                 if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
                     progress_bar.update()
 
-        if output_type == "latent":
-            image = latents
-        else:
-            latents = latents.to(self.vae.dtype)
-            image = self.vae.decode(latents / self.vae.config.scaling_factor, return_dict=False)[0]
-            if use_resolution_binning:
-                image = self.image_processor.resize_and_crop_tensor(image, orig_width, orig_height)
-
-        if not output_type == "latent":
-            image = self.image_processor.postprocess(image, output_type=output_type)
+        image = latents
 
         # Offload all models
         self.maybe_free_model_hooks()

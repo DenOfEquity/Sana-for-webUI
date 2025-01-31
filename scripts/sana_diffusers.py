@@ -4,6 +4,7 @@ check_min_version("0.32.0")
 
 class SanaStorage:
     ModuleReload = False
+    forgeCanvas = False
     usingGradio4 = False
     pipeTE = None
     pipeTR = None
@@ -48,6 +49,14 @@ try:
     SanaStorage.ModuleReload = True
 except:
     SanaStorage.ModuleReload = False
+
+try:
+    from modules_forge.forge_canvas.canvas import ForgeCanvas, canvas_head
+    SanaStorage.forgeCanvas = True
+except:
+    SanaStorage.forgeCanvas = False
+    canvas_head = ""
+
 
 ##   from webui
 from modules import script_callbacks, images, shared
@@ -131,20 +140,28 @@ def predict(positive_prompt, negative_prompt, model, sampler, width, height, gui
     if i2iSource == None:
         maskType = 0
         i2iDenoise = 1
+    else:
+        if SanaStorage.i2iAllSteps == True:
+            num_steps = int(num_steps / i2iDenoise)
+        
+        if SanaStorage.forgeCanvas:
+            i2iSource = i2iSource.convert('RGB')
+    
     if maskSource == None:
         maskType = 0
-    if SanaStorage.i2iAllSteps == True:
-        num_steps = int(num_steps / i2iDenoise)
-        
+
     match maskType:
         case 0:     #   'none'
             maskSource = None
             maskBlur = 0
             maskCutOff = 1.0
-        case 1:     #   'image'
+        case 1:     #   'drawn'
+            if SanaStorage.forgeCanvas:
+                maskSource = maskSource.getchannel('R').convert('L')
+            else:
+                maskSource = maskSource['layers'][0]  if SanaStorage.usingGradio4 else maskSource['mask']
+        case 2:     #   'image'
             maskSource = maskSource['background'] if SanaStorage.usingGradio4 else maskSource['image']
-        case 2:     #   'drawn'
-            maskSource = maskSource['layers'][0]  if SanaStorage.usingGradio4 else maskSource['mask']
         case 3:     #   'composite'
             maskSource = maskSource['composite']  if SanaStorage.usingGradio4 else maskSource['image']
         case _:
@@ -363,6 +380,7 @@ def predict(positive_prompt, negative_prompt, model, sampler, width, height, gui
         del imageR, imageG, imageB, image, image_latents#, NoiseScheduler
     #   end: colour the initial noise
 
+
     timesteps = None
 
 #    if useCustomTimeSteps:
@@ -404,8 +422,6 @@ def predict(positive_prompt, negative_prompt, model, sampler, width, height, gui
 
             pag_scale                       = PAG_scale,
             pag_adaptive_scale              = PAG_adapt,
-
-            output_type                     = "latent",
         ).images
 
     if SanaStorage.noUnload:
@@ -526,6 +542,7 @@ def on_ui_tabs():
     def i2iMakeCaptions (image, originalPrompt):
         if image == None:
             return originalPrompt
+        image = image.convert('RGB')
 
         model = AutoModelForCausalLM.from_pretrained('microsoft/Florence-2-base', 
                                                          attn_implementation="sdpa", 
@@ -812,7 +829,7 @@ def on_ui_tabs():
             return None, 'none'
 
 
-    with gradio.Blocks() as sana_block:
+    with gradio.Blocks(analytics_enabled=False, head=canvas_head) as sana_block:
         with ResizeHandleRow():
             with gradio.Column():
                 with gradio.Row():
@@ -865,42 +882,62 @@ def on_ui_tabs():
                         sharpNoise = ToolButton(value="s", variant='secondary', tooltip='Sharpen initial noise')
 
                 with gradio.Accordion(label='image to image', open=False):
-                    with gradio.Row():
-                        i2iSource = gradio.Image(label='image to image source', sources=['upload'], type='pil', interactive=True, show_download_button=False)
-                        if SanaStorage.usingGradio4:
-                            maskSource = gradio.ImageMask(label='mask source', sources=['upload'], type='pil', interactive=True, show_download_button=False, layers=False, brush=gradio.Brush(colors=["#F0F0F0"], default_color="#F0F0F0", color_mode='fixed'))
-                        else:
-                            maskSource = gradio.Image(label='mask source', sources=['upload'], type='pil', interactive=True, show_download_button=False, tool='sketch', image_mode='RGB', brush_color='#F0F0F0')#opts.img2img_inpaint_mask_brush_color)
-                    with gradio.Row():
-                        with gradio.Column():
-                            with gradio.Row():
-                                i2iDenoise = gradio.Slider(label='Denoise', minimum=0.00, maximum=1.0, step=0.01, value=0.5)
-                                AS = ToolButton(value='AS')
-                            with gradio.Row():
-                                i2iFromGallery = gradio.Button(value='Get gallery image')
-                                i2iSetWH = gradio.Button(value='Set size from image')
-                            with gradio.Row():
-                                i2iCaption = gradio.Button(value='Caption image (Florence-2)', scale=6)
-                                toPrompt = ToolButton(value='P', variant='secondary')
-
-                        with gradio.Column():
-                            maskType = gradio.Dropdown(['none', 'image', 'drawn', 'composite'], value='none', label='Mask', type='index')
+                    if SanaStorage.forgeCanvas:
+                        i2iSource = ForgeCanvas(elem_id="Sana_img2img_image", height=320, scribble_color=opts.img2img_inpaint_mask_brush_color, scribble_color_fixed=True, scribble_alpha=75, scribble_alpha_fixed=False, scribble_softness_fixed=False)
+                        with gradio.Row():
+                            i2iFromGallery = gradio.Button(value='Get gallery image')
+                            i2iSetWH = gradio.Button(value='Set size from image')
+                            i2iCaption = gradio.Button(value='Caption image')
+                            toPrompt = ToolButton(value='P', variant='secondary')
+                        
+                        with gradio.Row():
+                            i2iDenoise = gradio.Slider(label='Denoise', minimum=0.00, maximum=1.0, step=0.01, value=0.5)
+                            AS = ToolButton(value='AS')
+                            maskType = gradio.Dropdown(['none', 'drawn'], value='none', label='Mask', type='index')
+                        with gradio.Row():
                             maskBlur = gradio.Slider(label='Blur mask radius', minimum=0, maximum=25, step=1, value=0)
                             maskCut = gradio.Slider(label='Ignore Mask after step', minimum=0.00, maximum=1.0, step=0.01, value=1.0)
-                            maskCopy = gradio.Button(value='use i2i source as template')
+                 
+                    else:
+                        with gradio.Row():
+                            i2iSource = gradio.Image(label='image to image source', sources=['upload'], type='pil', interactive=True, show_download_button=False)
+                            if SanaStorage.usingGradio4:
+                                maskSource = gradio.ImageEditor(label='mask source', sources=['upload'], type='pil', interactive=True, show_download_button=False, layers=False, brush=gradio.Brush(colors=['#FFFFFF'], color_mode='fixed'))
+                            else:
+                                maskSource = gradio.Image(label='mask source', sources=['upload'], type='pil', interactive=True, show_download_button=False, tool='sketch', image_mode='RGB', brush_color='#F0F0F0')#opts.img2img_inpaint_mask_brush_color)
+                        with gradio.Row():
+                            with gradio.Column():
+                                with gradio.Row():
+                                    i2iDenoise = gradio.Slider(label='Denoise', minimum=0.00, maximum=1.0, step=0.01, value=0.5)
+                                    AS = ToolButton(value='AS')
+                                with gradio.Row():
+                                    i2iFromGallery = gradio.Button(value='Get gallery image')
+                                    i2iSetWH = gradio.Button(value='Set size from image')
+                                with gradio.Row():
+                                    i2iCaption = gradio.Button(value='Caption image (Florence-2)', scale=6)
+                                    toPrompt = ToolButton(value='P', variant='secondary')
+
+                            with gradio.Column():
+                                maskType = gradio.Dropdown(['none', 'drawn', 'image', 'composite'], value='none', label='Mask', type='index')
+                                maskBlur = gradio.Slider(label='Blur mask radius', minimum=0, maximum=25, step=1, value=0)
+                                maskCut = gradio.Slider(label='Ignore Mask after step', minimum=0.00, maximum=1.0, step=0.01, value=1.0)
+                                maskCopy = gradio.Button(value='use i2i source as template')
 
                 with gradio.Row():
                     noUnload = gradio.Button(value='keep models loaded', variant='primary' if SanaStorage.noUnload else 'secondary', tooltip='noUnload', scale=1)
                     unloadModels = gradio.Button(value='unload models', tooltip='force unload of models', scale=1)
 
-                ctrls = [positive_prompt, negative_prompt, model, sampler, width, height, guidance_scale, CFGrescale, steps, sampling_seed, batch_size, i2iSource, i2iDenoise, style, PAG_scale, PAG_adapt, maskType, maskSource, maskBlur, maskCut, shift]
+                if SanaStorage.forgeCanvas:
+                    ctrls = [positive_prompt, negative_prompt, model, sampler, width, height, guidance_scale, CFGrescale, steps, sampling_seed, batch_size, i2iSource.background, i2iDenoise, style, PAG_scale, PAG_adapt, maskType, i2iSource.foreground, maskBlur, maskCut, shift]
+                else:
+                    ctrls = [positive_prompt, negative_prompt, model, sampler, width, height, guidance_scale, CFGrescale, steps, sampling_seed, batch_size, i2iSource, i2iDenoise, style, PAG_scale, PAG_adapt, maskType, maskSource, maskBlur, maskCut, shift]
                 
                 parseCtrls = [positive_prompt, negative_prompt, sampler, width, height, sampling_seed, steps, guidance_scale, CFGrescale, initialNoiseR, initialNoiseG, initialNoiseB, initialNoiseA, PAG_scale, PAG_adapt, shift]
 
             with gradio.Column():
                 generate_button = gradio.Button(value="Generate", variant='primary', visible=True)
                 output_gallery = gradio.Gallery(label='Output', height="80vh", type='pil', interactive=False, elem_id="Sana_gallery",
-                                            show_label=False, object_fit='contain', visible=True, columns=1, preview=True)
+                                            show_label=False, object_fit='contain', visible=True, columns=3, rows=3, preview=True)
 
 #   caption not displaying linebreaks, alt text does
                 gallery_index = gradio.Number(value=0, visible=False)
@@ -937,28 +974,33 @@ def on_ui_tabs():
             show_progress=False
         )
 
-        noUnload.click(toggleNU, inputs=[], outputs=noUnload)
-        unloadModels.click(unloadM, inputs=[], outputs=[], show_progress=True)
-        maskCopy.click(fn=maskFromImage, inputs=[i2iSource], outputs=[maskSource, maskType])
+        if SanaStorage.forgeCanvas:
+            i2iSetWH.click (fn=i2iSetDimensions, inputs=[i2iSource.background, width, height], outputs=[width, height], show_progress=False)
+            i2iFromGallery.click (fn=i2iImageFromGallery, inputs=[output_gallery, gallery_index], outputs=[i2iSource.background])
+            i2iCaption.click (fn=i2iMakeCaptions, inputs=[i2iSource.background, positive_prompt], outputs=[positive_prompt])
+        else:
+            maskCopy.click(fn=maskFromImage, inputs=[i2iSource], outputs=[maskSource, maskType])
+            i2iSetWH.click (fn=i2iSetDimensions, inputs=[i2iSource, width, height], outputs=[width, height], show_progress=False)
+            i2iFromGallery.click (fn=i2iImageFromGallery, inputs=[output_gallery, gallery_index], outputs=[i2iSource])
+            i2iCaption.click (fn=i2iMakeCaptions, inputs=[i2iSource, positive_prompt], outputs=[positive_prompt])
 
-        SP.click(toggleSP, inputs=[], outputs=SP)
+        noUnload.click(toggleNU, inputs=None, outputs=noUnload)
+        unloadModels.click(unloadM, inputs=None, outputs=None, show_progress=True)
+
+        SP.click(toggleSP, inputs=None, outputs=SP)
         SP.click(superPrompt, inputs=[positive_prompt, sampling_seed], outputs=[SP, positive_prompt])
-        sharpNoise.click(toggleSharp, inputs=[], outputs=sharpNoise)
+        sharpNoise.click(toggleSharp, inputs=None, outputs=sharpNoise)
         dims.input(updateWH, inputs=[dims, width, height], outputs=[dims, width, height], show_progress=False)
         parse.click(parsePrompt, inputs=parseCtrls, outputs=parseCtrls, show_progress=False)
-        access.click(toggleAccess, inputs=[], outputs=access)
-        bCFG.click(toggleBiasCFG, inputs=[], outputs=bCFG)
-        resBin.click(toggleResBin, inputs=[], outputs=resBin)
+        access.click(toggleAccess, inputs=None, outputs=access)
+        bCFG.click(toggleBiasCFG, inputs=None, outputs=bCFG)
+        resBin.click(toggleResBin, inputs=None, outputs=resBin)
         swapper.click(lambda w, h: (h, w), inputs=[width, height], outputs=[width, height], show_progress=False)
-        random.click(toggleRandom, inputs=[], outputs=random, show_progress=False)
-#        reuseSeed.click(reuseLastSeed, inputs=gallery_index, outputs=sampling_seed, show_progress=False)
-        AS.click(toggleAS, inputs=[], outputs=AS)
-        refreshL.click(refreshLoRAs, inputs=[], outputs=[lora])
+        random.click(toggleRandom, inputs=None, outputs=random, show_progress=False)
+        AS.click(toggleAS, inputs=None, outputs=AS)
+        refreshL.click(refreshLoRAs, inputs=None, outputs=[lora])
 
-        i2iSetWH.click (fn=i2iSetDimensions, inputs=[i2iSource, width, height], outputs=[width, height], show_progress=False)
-        i2iFromGallery.click (fn=i2iImageFromGallery, inputs=[output_gallery, gallery_index], outputs=[i2iSource])
-        i2iCaption.click (fn=i2iMakeCaptions, inputs=[i2iSource, positive_prompt], outputs=[positive_prompt])
-        toPrompt.click(toggleC2P, inputs=[], outputs=[toPrompt])
+        toPrompt.click(toggleC2P, inputs=None, outputs=[toPrompt])
 
         output_gallery.select(fn=getGalleryIndex, js="selected_gallery_index", inputs=gallery_index, outputs=gallery_index, show_progress=False).then(fn=getGalleryText, inputs=[output_gallery, gallery_index, base_seed], outputs=[infotext, sampling_seed], show_progress=False)
 
