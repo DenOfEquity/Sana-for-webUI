@@ -13,6 +13,7 @@ Go to the **Extensions** tab, then **Install from URL**, use the URL for this re
 Easiest way to ensure necessary versions are installed is to edit `requirements_versions.txt` in the webUI folder.
 ```
 diffusers>=0.32.0
+accelerate>=0.26.0
 ```
 
 ---
@@ -30,6 +31,9 @@ diffusers>=0.32.0
 ---
 <details>
 <summary>Change log</summary>
+
+#### 31/01/2025 ####
+* switched img2img to use ForgeCanvas, if installed in Forge2. Gradio4 ImageEditor is bugged, consumes GPU or CPU constantly.
 
 #### 17/01/2025 ####
 * add option for alternative CFG calculation. '0' button toggle, +50% inference time, PAG takes priority.
