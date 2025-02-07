@@ -57,6 +57,7 @@ except:
     SanaStorage.forgeCanvas = False
     canvas_head = ""
 
+from PIL import Image, ImageFilter
 
 ##   from webui
 from modules import script_callbacks, images, shared
@@ -140,12 +141,6 @@ def predict(positive_prompt, negative_prompt, model, sampler, width, height, gui
     if i2iSource == None:
         maskType = 0
         i2iDenoise = 1
-    else:
-        if SanaStorage.i2iAllSteps == True:
-            num_steps = int(num_steps / i2iDenoise)
-        
-        if SanaStorage.forgeCanvas:
-            i2iSource = i2iSource.convert('RGB')
     
     if maskSource == None:
         maskType = 0
@@ -155,22 +150,46 @@ def predict(positive_prompt, negative_prompt, model, sampler, width, height, gui
             maskSource = None
             maskBlur = 0
             maskCutOff = 1.0
-        case 1:     #   'drawn'
-            if SanaStorage.forgeCanvas:
-                maskSource = maskSource.getchannel('R').convert('L')
-            else:
+        case 1:
+            if SanaStorage.forgeCanvas: #  'inpaint mask'
+                maskSource = maskSource.getchannel('A').convert('L')#.convert("RGB")#.getchannel('R').convert('L')
+            else:                       #   'drawn'
                 maskSource = maskSource['layers'][0]  if SanaStorage.usingGradio4 else maskSource['mask']
-        case 2:     #   'image'
-            maskSource = maskSource['background'] if SanaStorage.usingGradio4 else maskSource['image']
-        case 3:     #   'composite'
-            maskSource = maskSource['composite']  if SanaStorage.usingGradio4 else maskSource['image']
+        case 2:
+            if SanaStorage.forgeCanvas: #   sketch
+                i2iSource = Image.alpha_composite(i2iSource, maskSource)
+                maskSource = None
+                maskBlur = 0
+                maskCutOff = 1.0
+            else:                       #   'image'
+                maskSource = maskSource['background'] if SanaStorage.usingGradio4 else maskSource['image']
+        case 3:
+            if SanaStorage.forgeCanvas: #   inpaint sketch
+                i2iSource = Image.alpha_composite(i2iSource, maskSource)
+                mask = maskSource.getchannel('A').convert('L')
+                short_side = min(mask.size)
+                dilation_size = int(0.015 * short_side) * 2 + 1
+                mask = mask.filter(ImageFilter.MaxFilter(dilation_size))
+                maskSource = mask.point(lambda v: 255 if v > 0 else 0)
+                maskCutoff = 0.0
+            else:                       #   'composite'
+                maskSource = maskSource['composite']  if SanaStorage.usingGradio4 else maskSource['image']
         case _:
             maskSource = None
             maskBlur = 0
             maskCutOff = 1.0
 
+    if i2iSource:
+        if SanaStorage.i2iAllSteps == True:
+            num_steps = int(num_steps / i2iDenoise)
+
+        if SanaStorage.forgeCanvas:
+            i2iSource = i2iSource.convert('RGB')
+
+
     if maskBlur > 0:
-        maskSource = TF.gaussian_blur(maskSource, 1+2*maskBlur)
+        dilation_size = maskBlur * 2 + 1
+        maskSource = TF.gaussian_blur(maskSource.filter(ImageFilter.MaxFilter(dilation_size)), dilation_size)
     ####    end check img2img
  
     ####    enforce safe generation size
@@ -361,8 +380,6 @@ def predict(positive_prompt, negative_prompt, model, sampler, width, height, gui
         imageB = torch.tensor(numpy.full((32,32), (nb), dtype=numpy.float32))
         image = torch.stack((imageR, imageG, imageB), dim=0).unsqueeze(0)
         
-        SanaStorage.pipeTR.vae.to(torch.float32)
-
         image = SanaStorage.pipeTR.image_processor.preprocess(image).to('cuda')
         image_latents = SanaStorage.pipeTR.vae.encode(image)[0]
         image_latents *= SanaStorage.pipeTR.vae.config.scaling_factor * SanaStorage.pipeTR.scheduler.init_noise_sigma
@@ -450,6 +467,7 @@ def predict(positive_prompt, negative_prompt, model, sampler, width, height, gui
             image = SanaStorage.pipeTR.image_processor.resize_and_crop_tensor(image, width, height)
         image = SanaStorage.pipeTR.image_processor.postprocess(image, output_type="pil")[0]
 
+
         info=create_infotext(
             model, sampler,
             positive_prompt, negative_prompt,
@@ -459,6 +477,11 @@ def predict(positive_prompt, negative_prompt, model, sampler, width, height, gui
             width, height,
             PAG_scale, PAG_adapt,
             shift)
+
+        if maskType > 0 and maskSource is not None:
+            # i2iSource = i2iSource.convert('RGB')
+            # image = image.convert('RGB')
+            image = Image.composite(image, i2iSource, maskSource)
 
         results.append((image, info))
         
@@ -883,7 +906,7 @@ def on_ui_tabs():
 
                 with gradio.Accordion(label='image to image', open=False):
                     if SanaStorage.forgeCanvas:
-                        i2iSource = ForgeCanvas(elem_id="Sana_img2img_image", height=320, scribble_color=opts.img2img_inpaint_mask_brush_color, scribble_color_fixed=True, scribble_alpha=75, scribble_alpha_fixed=False, scribble_softness_fixed=False)
+                        i2iSource = ForgeCanvas(elem_id="Sana_img2img_image", height=320, scribble_color=opts.img2img_inpaint_mask_brush_color, scribble_color_fixed=False, scribble_alpha=100, scribble_alpha_fixed=False, scribble_softness_fixed=False)
                         with gradio.Row():
                             i2iFromGallery = gradio.Button(value='Get gallery image')
                             i2iSetWH = gradio.Button(value='Set size from image')
@@ -893,9 +916,9 @@ def on_ui_tabs():
                         with gradio.Row():
                             i2iDenoise = gradio.Slider(label='Denoise', minimum=0.00, maximum=1.0, step=0.01, value=0.5)
                             AS = ToolButton(value='AS')
-                            maskType = gradio.Dropdown(['none', 'drawn'], value='none', label='Mask', type='index')
+                            maskType = gradio.Dropdown(['i2i', 'inpaint mask', 'sketch', 'inpaint sketch'], value='i2i', label='Type', type='index')
                         with gradio.Row():
-                            maskBlur = gradio.Slider(label='Blur mask radius', minimum=0, maximum=25, step=1, value=0)
+                            maskBlur = gradio.Slider(label='Blur mask radius', minimum=0, maximum=64, step=1, value=0)
                             maskCut = gradio.Slider(label='Ignore Mask after step', minimum=0.00, maximum=1.0, step=0.01, value=1.0)
                  
                     else:

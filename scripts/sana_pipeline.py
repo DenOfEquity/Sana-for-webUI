@@ -668,7 +668,7 @@ class Sana_Pipeline_DoE(DiffusionPipeline, PAGMixin):
             orig_height, orig_width = height, width
             height, width = self.image_processor.classify_height_width_bin(height, width, ratios=aspect_ratio_bin)
 
-        doDiffDiff = True if (image and mask_image) else False
+        doDiffDiff = True if (image and mask_image and mask_cutoff > 0.0) else False
 
         self._pag_scale = pag_scale
         self._pag_adaptive_scale = pag_adaptive_scale
@@ -783,6 +783,7 @@ class Sana_Pipeline_DoE(DiffusionPipeline, PAGMixin):
             if mask_image is not None:
                 # 5.1. Prepare masked latent variables
                 mask = self.mask_processor.preprocess(mask_image.resize((width//32, height//32))).to(device='cuda')
+                mask = mask / mask.max()
 
             self.vae.to('cpu')
             gc.collect()
