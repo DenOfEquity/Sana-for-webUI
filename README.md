@@ -24,13 +24,16 @@ accelerate>=0.26.0
 > if **noUnload** is selected then models are kept in memory; otherwise reloaded for each run. The **unload models** button removes them from memory.
 
 ---
-### almost current UI screenshot ###
-![](screenshot.png "UI screenshot")
+### current UI screenshot ###
+![](screenshot2.png "UI screenshot")
 
 
 ---
 <details>
 <summary>Change log</summary>
+
+#### 07/02/2025 ####
+* improved image2image / inpainting
 
 #### 31/01/2025 ####
 * switched img2img to use ForgeCanvas, if installed in Forge2. Gradio4 ImageEditor is bugged, consumes GPU or CPU constantly.
