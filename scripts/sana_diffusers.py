@@ -78,7 +78,7 @@ from diffusers import DPMSolverMultistepScheduler, FlowMatchEulerDiscreteSchedul
 from diffusers.utils.torch_utils import randn_tensor
 from diffusers.utils import logging
 
-##  for Florence-2, including workaround for unnecessary flash_attn requirement
+##  for Florence-2
 from transformers import AutoProcessor, AutoModelForCausalLM 
 ##  for SuperPrompt
 from transformers import T5TokenizerFast, T5ForConditionalGeneration
@@ -457,6 +457,8 @@ def predict(positive_prompt, negative_prompt, model, sampler, width, height, gui
 
     SanaStorage.pipeTR.vae.to('cuda')
 
+    original_samples_filename_pattern = opts.samples_filename_pattern
+    opts.samples_filename_pattern = "Sana_[datetime]"
     results = []
     total = len(output)
     for i in range (total):
@@ -495,6 +497,7 @@ def predict(positive_prompt, negative_prompt, model, sampler, width, height, gui
             info
         )
     print ('Sana: VAE: done  ')
+    opts.samples_filename_pattern = original_samples_filename_pattern
 
     del output
 
@@ -546,22 +549,12 @@ def on_ui_tabs():
     def getGalleryText (gallery, index, seed):
         return gallery[index][1], seed+index
 
-    # def reuseLastSeed (index):
-        # return SanaStorage.lastSeed + index
-        
     def i2iSetDimensions (image, w, h):
         if image is not None:
             w = image.size[0]
             h = image.size[1]
         return [w, h]
 
-    def fixed_get_imports(filename: str | os.PathLike) -> list[str]:
-        if not str(filename).endswith("modeling_florence2.py"):
-            return get_imports(filename)
-        imports = get_imports(filename)
-        if "flash_attn" in imports:
-            imports.remove("flash_attn")
-        return imports
     def i2iMakeCaptions (image, originalPrompt):
         if image == None:
             return originalPrompt
@@ -889,7 +882,6 @@ def on_ui_tabs():
                     steps = gradio.Slider(label='Steps', minimum=1, maximum=60, step=1, value=11, scale=1, visible=True)
                     random = ToolButton(value="\U0001f3b2\ufe0f", variant="primary")
                     sampling_seed = gradio.Number(label='Seed', value=-1, precision=0, scale=0)
-#                    reuseSeed = ToolButton(value="\u267b\ufe0f")
 
                 with gradio.Row(equal_height=True):
                     lora = gradio.Dropdown([x for x in loras], label='LoRA (place in models/diffusers/SanaLora)', value="(None)", type='value', multiselect=False, scale=1)
@@ -1010,8 +1002,7 @@ def on_ui_tabs():
         noUnload.click(toggleNU, inputs=None, outputs=noUnload)
         unloadModels.click(unloadM, inputs=None, outputs=None, show_progress=True)
 
-        SP.click(toggleSP, inputs=None, outputs=SP)
-        SP.click(superPrompt, inputs=[positive_prompt, sampling_seed], outputs=[SP, positive_prompt])
+        SP.click(toggleSP, inputs=None, outputs=SP).then(superPrompt, inputs=[positive_prompt, sampling_seed], outputs=[SP, positive_prompt])
         sharpNoise.click(toggleSharp, inputs=None, outputs=sharpNoise)
         dims.input(updateWH, inputs=[dims, width, height], outputs=[dims, width, height], show_progress=False)
         parse.click(parsePrompt, inputs=parseCtrls, outputs=parseCtrls, show_progress=False)
