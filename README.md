@@ -34,7 +34,7 @@ accelerate>=0.26.0
 
 #### 15/05/2025 ####
 * use v1.1 VAE
-* fp8 model storage option - needs diffusers >= 0.33.0
+* fp8 model storage option - needs diffusers >= 0.33.0 - the conversion uses lots of RAM. Recommend to use the option to keep models loaded.
 
 #### 10/04/2025 ####
 * add Sana1.5 models - needs diffusers >= 0.33.0
