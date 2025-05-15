@@ -16,7 +16,7 @@ import html
 import inspect
 import re
 import urllib.parse as ul
-from typing import Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import torch
 import gc
@@ -26,7 +26,8 @@ from diffusers.callbacks import MultiPipelineCallbacks, PipelineCallback
 from diffusers.image_processor import VaeImageProcessor, PipelineImageInput, PixArtImageProcessor
 from diffusers.models import AutoencoderDC, SanaTransformer2DModel
 from diffusers.models.attention_processor import PAGCFGSanaLinearAttnProcessor2_0, PAGIdentitySanaLinearAttnProcessor2_0
-from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
+from diffusers.schedulers import FlowMatchEulerDiscreteScheduler, DPMSolverMultistepScheduler
+
 from diffusers.utils import (
     BACKENDS_MAPPING,
     is_bs4_available,
@@ -85,6 +86,7 @@ ASPECT_RATIO_4096_BIN = {
     "4.0": [8192.0, 2048.0],
 }
 
+from diffusers.loaders import SanaLoraLoaderMixin
 from diffusers.pipelines.pag.pag_utils import PAGMixin
 
 
@@ -191,7 +193,7 @@ def rescale_noise_cfg(noise_cfg, noise_pred_text, guidance_rescale=0.0):
     noise_cfg = guidance_rescale * noise_pred_rescaled + (1 - guidance_rescale) * noise_cfg
     return noise_cfg
 
-class Sana_Pipeline_DoE(DiffusionPipeline, PAGMixin):
+class Sana_Pipeline_DoE(DiffusionPipeline, PAGMixin, SanaLoraLoaderMixin):
     r"""
     Pipeline for text-to-image generation using [Sana](https://huggingface.co/papers/2410.10629). This pipeline
     supports the use of [Perturbed Attention Guidance
@@ -508,6 +510,10 @@ class Sana_Pipeline_DoE(DiffusionPipeline, PAGMixin):
         return latents
 
     @property
+    def attention_kwargs(self):
+        return self._attention_kwargs
+
+    @property
     def guidance_scale(self):
         return self._guidance_scale
 
@@ -549,6 +555,8 @@ class Sana_Pipeline_DoE(DiffusionPipeline, PAGMixin):
         return_dict: bool = True,
         clean_caption: bool = False,
         use_resolution_binning: bool = True,
+        attention_kwargs: Optional[Dict[str, Any]] = None,
+
         callback_on_step_end: Optional[Callable[[int, int, Dict], None]] = None,
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
         max_sequence_length: int = 300,
@@ -673,12 +681,14 @@ class Sana_Pipeline_DoE(DiffusionPipeline, PAGMixin):
         self._pag_scale = pag_scale
         self._pag_adaptive_scale = pag_adaptive_scale
         self._guidance_scale = guidance_scale
+        self._attention_kwargs = attention_kwargs
         self._interrupt = False
 
         # 2. Default height and width to transformer
         batch_size = prompt_embeds.shape[0]
 
         device = self._execution_device
+        # lora_scale = self.attention_kwargs.get("scale", None) if self.attention_kwargs is not None else None
 
         (
             prompt_embeds,
@@ -824,6 +834,7 @@ class Sana_Pipeline_DoE(DiffusionPipeline, PAGMixin):
                     encoder_attention_mask=prompt_attention_mask,
                     timestep=timestep,
                     return_dict=False,
+                    attention_kwargs=self.attention_kwargs,
                 )[0]
                 noise_pred = noise_pred.float()
 
@@ -881,3 +892,5 @@ class Sana_Pipeline_DoE(DiffusionPipeline, PAGMixin):
             return (image,)
 
         return ImagePipelineOutput(images=image)
+
+

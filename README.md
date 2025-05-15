@@ -32,6 +32,13 @@ accelerate>=0.26.0
 <details>
 <summary>Change log</summary>
 
+#### 15/05/2025 ####
+* use v1.1 VAE
+* fp8 model storage option - needs diffusers >= 0.33.0
+
+#### 10/04/2025 ####
+* add Sana1.5 models - needs diffusers >= 0.33.0
+
 #### 07/02/2025 ####
 * improved image2image / inpainting
 

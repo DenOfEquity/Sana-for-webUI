@@ -26,14 +26,15 @@ class SanaStorage:
     captionToPrompt = False
     sendAccessToken = False
     doneAccessTokenWarning = False
-    randomSeed = True
 
     locked = False     #   for preventing changes to the following volatile state while generating
+    randomSeed = True
     noUnload = False
     biasCFG = False
     resolutionBin = True
     sharpNoise = False
     i2iAllSteps = False
+    model8bit = False
 
 import gc
 import gradio
@@ -89,7 +90,7 @@ import scripts.sana_pipeline as pipeline
 
 
 # modules/processing.py - don't use ',', '\n', ':' in values
-def create_infotext(model, sampler, positive_prompt, negative_prompt, guidance_scale, guidance_rescale, steps, seed, width, height, PAG_scale, PAG_adapt, shift):
+def create_infotext(model, sampler, positive_prompt, negative_prompt, guidance_scale, guidance_rescale, steps, seed, width, height, PAG_scale, PAG_adapt, shift, loraSettings):
     bCFG = ", biasCorrectionCFG: enabled" if SanaStorage.biasCFG == True else ""
     generation_params = {
         "Steps": steps,
@@ -100,6 +101,7 @@ def create_infotext(model, sampler, positive_prompt, negative_prompt, guidance_s
         "PAG": f"{PAG_scale} ({PAG_adapt})",
         "Shift": f"{shift}",
         "Sampler": f"{sampler}",
+        "LoRA"          :   loraSettings,
     }
 #add i2i marker?
     prompt_text = f"{positive_prompt}\n"
@@ -126,10 +128,16 @@ def predict(positive_prompt, negative_prompt, model, sampler, width, height, gui
 
     torch.set_grad_enabled(False)
 
+    if "BF16" in model:
+        dtype = torch.bfloat16
+        variant = "bf16"
+    elif "SANA1.5" in model:
+        dtype = torch.bfloat16
+        variant = "bf16"
+    else:
+        dtype = torch.float16
+        variant = "fp16"
 
-    dtype = torch.bfloat16 if "BF16" in model else torch.float16
-    variant = "bf16" if "BF16" in model else "fp16"
-    
     if style != 0:
         positive_prompt = styles.styles_list[style][1].replace("{prompt}", positive_prompt)
         negative_prompt = negative_prompt + styles.styles_list[style][2]
@@ -185,7 +193,6 @@ def predict(positive_prompt, negative_prompt, model, sampler, width, height, gui
 
         if SanaStorage.forgeCanvas:
             i2iSource = i2iSource.convert('RGB')
-
 
     if maskBlur > 0:
         dilation_size = maskBlur * 2 + 1
@@ -272,21 +279,44 @@ def predict(positive_prompt, negative_prompt, model, sampler, width, height, gui
     if SanaStorage.pipeTR == None:
         from diffusers.models import AutoencoderDC, SanaTransformer2DModel
 
-        SanaStorage.pipeTR = pipeline.Sana_Pipeline_DoE.from_pretrained(
-            model,
-            tokenizer=None,
-            text_encoder=None,
-            vae=AutoencoderDC.from_pretrained("Efficient-Large-Model/Sana_1600M_1024px_BF16_diffusers", subfolder="vae", variant="bf16"),
-            transformer=SanaTransformer2DModel.from_pretrained(model, subfolder="transformer", variant=variant),
-            variant=variant,
-            torch_dtype=dtype,
-            pag_applied_layers=["transformer_blocks.8"],
-        )
+        if "SANA1.5" in model:
+            SanaStorage.pipeTR = pipeline.Sana_Pipeline_DoE.from_pretrained(
+                model,
+                tokenizer=None,
+                text_encoder=None,
+                # vae=AutoencoderDC.from_pretrained("Efficient-Large-Model/Sana_1600M_1024px_BF16_diffusers", subfolder="vae", variant="bf16"),
+                vae=AutoencoderDC.from_pretrained("mit-han-lab/dc-ae-f32c32-sana-1.1-diffusers"),
+                transformer=SanaTransformer2DModel.from_pretrained(model, subfolder="transformer"),
+                torch_dtype=dtype,
+                pag_applied_layers=["transformer_blocks.8"],
+            )
+        else:
+            SanaStorage.pipeTR = pipeline.Sana_Pipeline_DoE.from_pretrained(
+                model,
+                tokenizer=None,
+                text_encoder=None,
+                # vae=AutoencoderDC.from_pretrained("Efficient-Large-Model/Sana_1600M_1024px_BF16_diffusers", subfolder="vae", variant="bf16"),
+                vae=AutoencoderDC.from_pretrained("mit-han-lab/dc-ae-f32c32-sana-1.1-diffusers"),
+                transformer=SanaTransformer2DModel.from_pretrained(model, subfolder="transformer", variant=variant),
+                variant=variant,
+                torch_dtype=dtype,
+                pag_applied_layers=["transformer_blocks.8"],
+            )
         SanaStorage.lastModel = model
         SanaStorage.pipeTR.enable_model_cpu_offload()
 
         if "2Kpx" in model or "4Kpx" in model:
             SanaStorage.pipeTR.vae.enable_tiling()
+            
+        if SanaStorage.model8bit:
+            SanaStorage.pipeTR.transformer.enable_layerwise_casting(storage_dtype=torch.float8_e4m3fn, compute_dtype=torch.float32)
+            # SanaStorage.pipeTR.transformer.enable_group_offload(
+                # onload_device='cuda', 
+                # offload_device='cpu', 
+                # offload_type="leaf_level", 
+                # use_stream=True
+            # )
+
     ####    end setup pipe for transformer + VAE
 
     ####    shift, possibly other scheduler options, different sigmas?
@@ -315,13 +345,8 @@ def predict(positive_prompt, negative_prompt, model, sampler, width, height, gui
         try:
             SanaStorage.pipeTR.load_lora_weights(lorapath, weight_name=loraname, local_files_only=True, adapter_name="lora")
             SanaStorage.loadedLora = True
-            scales = {
-                "unet": SanaStorage.lora_scale
-            }
-            SanaStorage.pipeTR.set_adapters("lora", scales)
-#            pipe.set_adapters(SanaStorage.lora, adapter_weights=SanaStorage.lora_scale)
         except:
-            print ("Sana: failed LoRA: " + lorafile)
+            print ("Sana: failed LoRA: " + loraname)
             #   no reason to abort, just carry on without LoRA
 
 
@@ -439,6 +464,8 @@ def predict(positive_prompt, negative_prompt, model, sampler, width, height, gui
 
             pag_scale                       = PAG_scale,
             pag_adaptive_scale              = PAG_adapt,
+
+            attention_kwargs                = {"scale": SanaStorage.lora_scale }
         ).images
 
     if SanaStorage.noUnload:
@@ -448,7 +475,6 @@ def predict(positive_prompt, negative_prompt, model, sampler, width, height, gui
         SanaStorage.pipeTR.transformer.to('cpu')
     else:
         SanaStorage.pipeTR.transformer = None
-        SanaStorage.lastModel = None
 
     del generator, latents
 
@@ -456,6 +482,11 @@ def predict(positive_prompt, negative_prompt, model, sampler, width, height, gui
     torch.cuda.empty_cache()
 
     SanaStorage.pipeTR.vae.to('cuda')
+
+    if SanaStorage.lora != "(None)" and SanaStorage.lora_scale != 0.0:
+        loraSettings = SanaStorage.lora + f" ({SanaStorage.lora_scale})"
+    else:
+        loraSettings = None
 
     original_samples_filename_pattern = opts.samples_filename_pattern
     opts.samples_filename_pattern = "Sana_[datetime]"
@@ -478,7 +509,8 @@ def predict(positive_prompt, negative_prompt, model, sampler, width, height, gui
             fixed_seed + i, 
             width, height,
             PAG_scale, PAG_adapt,
-            shift)
+            shift,
+            loraSettings)
 
         if maskType > 0 and maskSource is not None:
             # i2iSource = i2iSource.convert('RGB')
@@ -518,7 +550,8 @@ def on_ui_tabs():
         reload(styles)
         reload(pipeline)
     
-    models_list = ["Efficient-Large-Model/Sana_600M_512px_diffusers", "Efficient-Large-Model/Sana_600M_1024px_diffusers", "Efficient-Large-Model/Sana_1600M_512px_diffusers", "Efficient-Large-Model/Sana_1600M_1024px_BF16_diffusers", "Efficient-Large-Model/Sana_1600M_2Kpx_BF16_diffusers", "Efficient-Large-Model/Sana_1600M_4Kpx_BF16_diffusers"]
+    models_list = ["Efficient-Large-Model/Sana_600M_512px_diffusers", "Efficient-Large-Model/Sana_600M_1024px_diffusers", "Efficient-Large-Model/Sana_1600M_512px_diffusers", "Efficient-Large-Model/Sana_1600M_1024px_BF16_diffusers", "Efficient-Large-Model/Sana_1600M_2Kpx_BF16_diffusers", "Efficient-Large-Model/Sana_1600M_4Kpx_BF16_diffusers", "Efficient-Large-Model/SANA1.5_1.6B_1024px_diffusers", "Efficient-Large-Model/SANA1.5_4.8B_1024px_diffusers"]
+    
     defaultModel = models_list[3]
     defaultWidth = 1024
     defaultHeight = 1024
@@ -547,7 +580,10 @@ def on_ui_tabs():
         return index
 
     def getGalleryText (gallery, index, seed):
-        return gallery[index][1], seed+index
+        if gallery:
+            return gallery[index][1], seed+index
+        else:
+            return "", seed+index
 
     def i2iSetDimensions (image, w, h):
         if image is not None:
@@ -645,6 +681,12 @@ def on_ui_tabs():
         if not SanaStorage.locked:
             SanaStorage.biasCFG ^= True
         return gradio.Button.update(variant='primary' if SanaStorage.biasCFG == True else 'secondary')
+
+    def toggle8bit ():
+        if not SanaStorage.locked:
+            SanaStorage.model8bit ^= True
+            SanaStorage.lastModel = None    # force reload
+        return gradio.Button.update(variant='primary' if SanaStorage.model8bit == True else 'secondary')
 
     def toggleResBin ():
         if not SanaStorage.locked:
@@ -939,6 +981,7 @@ def on_ui_tabs():
                                 maskCopy = gradio.Button(value='use i2i source as template')
 
                 with gradio.Row():
+                    model8bit = gradio.Button(value='store model in fp8', variant='primary' if SanaStorage.model8bit else 'secondary', tooltip='store model in fp8', scale=1)
                     noUnload = gradio.Button(value='keep models loaded', variant='primary' if SanaStorage.noUnload else 'secondary', tooltip='noUnload', scale=1)
                     unloadModels = gradio.Button(value='unload models', tooltip='force unload of models', scale=1)
 
@@ -999,6 +1042,7 @@ def on_ui_tabs():
             i2iFromGallery.click (fn=i2iImageFromGallery, inputs=[output_gallery, gallery_index], outputs=[i2iSource])
             i2iCaption.click (fn=i2iMakeCaptions, inputs=[i2iSource, positive_prompt], outputs=[positive_prompt])
 
+        model8bit.click(toggle8bit, inputs=None, outputs=model8bit)
         noUnload.click(toggleNU, inputs=None, outputs=noUnload)
         unloadModels.click(unloadM, inputs=None, outputs=None, show_progress=True)
 
